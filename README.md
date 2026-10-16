@@ -97,8 +97,25 @@ Three roles: **Owner**, **Admin**, and **Member**.
 - **Block / unblock** users in one-to-one conversations.
 
 ### 🔌 Extensibility
-- **Plugin system** — extend ChatBox with new languages, features, and
-  integrations without modifying the core.
+
+ChatBox ships a **plugin system** so new capabilities can be added **without
+modifying the core**. Plugins come in two distinct kinds, and they differ in
+where they are installed and how far their effects reach:
+
+- **Client plugins** — installed by the **user** on their own device. A client
+  plugin is applied **globally to that client** and only affects local
+  behavior; it **never requires any change on the server**. Typical examples
+  are language packs (translations), UI themes, and other client-side
+  features. Installing or removing one is entirely up to the user.
+- **Server plugins** — installed by the **server administrator** on the
+  backend. A server plugin runs server-side and **must be deployed and enabled
+  on the server** before it has any effect. Clients cannot install server
+  plugins, and a server plugin may add or change behavior for all connected
+  users.
+
+In short: **client plugins are user-installed and local (globally applied on
+that client, with no server impact), while server plugins are
+administrator-installed and only work when present on the server.**
 
 ---
 
