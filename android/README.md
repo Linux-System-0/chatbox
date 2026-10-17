@@ -34,5 +34,6 @@ app/src/main/java/com/chatbox/android/
 
 Language packs and themes are **client plugins** (see `docs/plugin-system.md`):
 they are installed and applied entirely on the device and never change server
-behavior. `plugins/ClientPlugins.kt` provides the built-in English and
-Simplified Chinese language packs and the light/dark/system themes.
+behavior. `plugins/ClientPlugins.kt` provides the built-in English fallback
+dictionary and the light/dark/system themes. Other languages, including
+Simplified Chinese, come from language packs installed as plugin files.
