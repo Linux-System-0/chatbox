@@ -90,12 +90,15 @@ Three roles: **Owner**, **Admin**, and **Member**.
 | Restrict who can invite members | ✅ | ✅ | ❌ |
 | Mute members | ✅ | ✅ | ❌ |
 | Kick / add members | ✅ | ✅ | ❌ |
+| Promote / demote admins | ✅ | ❌ | ❌ |
 | Transfer ownership | ✅ | ❌ | ❌ |
 | Dissolve group | ✅ | ❌ | ❌ |
 
 - Only **one** owner per group at a time.
-- The owner has all admin permissions **plus** ownership transfer and group
-  dissolution.
+- The owner has all admin permissions **plus** administrator management,
+  ownership transfer, and group dissolution.
+- Every member can set a private **group remark**; it changes only that member's
+  chat list and leaves the visible group name untouched.
 
 ### 🚫 Direct chat controls
 - **Block / unblock** users in one-to-one conversations.

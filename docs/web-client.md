@@ -31,8 +31,19 @@ the design system; protocol details live in [`api.md`](api.md) and
   Contacts expose remark and remark-avatar editing, and a blocked contact moves
   to the block list until unblocked.
 - The chats tab can create a group from contacts. Selecting a group opens its
-  member panel, where admins can rename the group or add/kick/mute members and
-  the owner can dissolve it; every member can leave.
+  member panel, where the owner can promote or demote administrators, admins can
+  rename the group or add/kick/mute members, and every member can set a private
+  **group remark** that only changes their own chat list. The owner can dissolve
+  the group; every member can leave.
+- The composer attaches files with the paperclip button. The client reserves an
+  upload with `POST /files/presign`, uploads bytes to the returned URL, completes
+  the upload, and sends a `kind: "file"` WebSocket frame. File bubbles show the
+  filename and size and download through the authenticated content endpoint.
+- Realtime changes beyond messages (friend requests, contacts, new direct or
+  group conversations, group roles/remarks) arrive as `sync` frames; the client
+  refreshes the affected lists automatically. It also refreshes on focus,
+  reconnect, and a low-frequency fallback timer, so manual reloads are never
+  required.
 - `routes/login` and `routes/register` render a centered, branded auth card.
 
 On narrow viewports the sidebar and the conversation occupy the same grid cell;

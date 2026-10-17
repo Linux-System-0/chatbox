@@ -38,9 +38,30 @@ future use.
   "message_id": 9001 }
 { "type": "message", "message": { /* Message */ } }
 { "type": "presence", "user_id": 7, "online": true, "devices": 2 }
+{ "type": "sync", "scopes": ["conversations", "groups"],
+  "conversation_id": 42, "group_id": 9 }
 { "type": "pong" }
 { "type": "error", "code": "rate_limited", "message": "..." }
 ```
+
+## Change notifications
+
+Messages are not the only server-side state that changes. Friend requests,
+contact remarks, new direct conversations, group membership, role changes,
+group remarks, and profile updates can all be produced by another client or by
+the same account on another device. When one of those mutations commits, the
+control plane pushes a `sync` frame to every affected live connection:
+
+```jsonc
+{ "type": "sync", "scopes": ["contacts", "requests"] }
+```
+
+`scopes` contains any of `conversations`, `contacts`, `requests`, and `groups`.
+`conversation_id` and `group_id` are optional hints for the affected entity.
+Clients refresh the listed views; they must not require a manual page reload.
+The Web client coalesces bursts of `sync` frames, also refreshes on window focus
+and reconnect, and runs a low-frequency fallback refresh so a dropped frame
+cannot leave stale state indefinitely.
 
 ## Ordering and delivery guarantees
 

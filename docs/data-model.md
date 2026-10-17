@@ -110,8 +110,8 @@ cursor (`last_read_seq`) and optional mute deadline.
 
 Clients render a person's name as **contact remark → display name → custom user
 ID** and their avatar as **contact remark avatar → profile avatar → generated
-default avatar**. For group conversations the group name is used instead of a
-contact remark.
+default avatar**. For group conversations the caller's private group remark is
+used first, then the group name.
 
 ### Group
 
@@ -125,8 +125,10 @@ contact remark.
 | `owner_id` | Snowflake | Exactly one owner |
 | `created_at` | timestamp | |
 
-`GroupMember` stores `role ∈ {owner, admin, member}`, `muted_until?`, and join
-time. Role permissions are described in `README.md`.
+`GroupMember` stores `role ∈ {owner, admin, member}`, a private `remark` the
+member may set for the group, `muted_until?`, and join time. Only the owner may
+promote or demote administrators; the owner role changes through ownership
+transfer. Role permissions are described in `README.md`.
 
 ### Block
 

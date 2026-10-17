@@ -94,9 +94,17 @@ contact remark precedence.
 | `POST` | `/groups/{id}/members` | Add members |
 | `DELETE` | `/groups/{id}/members/{user_id}` | Kick a member |
 | `POST` | `/groups/{id}/members/{user_id}/mute` | Mute/unmute a member |
+| `POST` | `/groups/{id}/members/{user_id}/role` | Promote/demote an admin (owner only) |
+| `PATCH` | `/groups/{id}/remark` | Set the caller's private group remark |
 | `POST` | `/groups/{id}/transfer` | Transfer ownership (owner only) |
 | `POST` | `/groups/{id}/leave` | Leave the group |
 | `DELETE` | `/groups/{id}` | Dissolve the group (owner only) |
+
+Only the owner may call `/groups/{id}/members/{user_id}/role`; the body is
+`{ "role": "admin" }` or `{ "role": "member" }`. Ownership itself changes
+through `/groups/{id}/transfer`. `PATCH /groups/{id}/remark` accepts
+`{ "remark": "..." }` and clears the caller's private alias with `null` or an
+empty string. The alias is never exposed to other members.
 
 ## Block list
 
@@ -116,8 +124,10 @@ Files are uploaded **directly to object storage** with a pre-signed URL.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/files/presign` | Request an upload URL + attachment ID |
+| `PUT` | `/files/upload/{id}` | Upload bytes to the local development backend |
 | `POST` | `/files/{id}/complete` | Confirm the upload and attach metadata |
-| `GET` | `/files/{id}` | Get a download URL (no inline preview) |
+| `GET` | `/files/{id}` | Get attachment metadata and a download URL |
+| `GET` | `/files/{id}/content` | Download attachment bytes (no inline preview) |
 
 ## Search
 
