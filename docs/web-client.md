@@ -133,3 +133,8 @@ toolbar reflects whether the other participant is actually online.
 - Status is conveyed by text as well as color (the connection pill shows a dot
   and the translated status word).
 - Decorative art is `aria-hidden` and does not enter the accessibility tree.
+- Destructive actions are confirmed with the in-page `lib/ConfirmDialog.svelte`,
+  which traps focus, closes on `Escape`, and sizes itself from the design tokens.
+  The web client never uses the browser-native `window.alert`, `window.confirm`,
+  or `window.prompt` dialogs, because they cannot be themed, translated, or
+  styled and they block the page's own accessibility tree.
