@@ -8,7 +8,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && node ../scripts/check-language-packs.mjs"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.2.0",
