@@ -92,8 +92,9 @@ fn opt_naive(value: Option<Timestamp>) -> Option<NaiveDateTime> {
 }
 
 fn seq(row: &MySqlRow, col: &str) -> Result<u64> {
-    let value: i64 = row.try_get(col).map_err(Error::storage)?;
-    Ok(value as u64)
+    // Sequence and size columns are declared BIGINT UNSIGNED, which SQLx only
+    // decodes into u64.
+    row.try_get(col).map_err(Error::storage)
 }
 
 fn bool_of(row: &MySqlRow, col: &str) -> Result<bool> {
@@ -200,9 +201,9 @@ fn member_from_row(row: &MySqlRow) -> Result<ConversationMember> {
 
 fn message_from_row(row: &MySqlRow) -> Result<Message> {
     let kind_raw: String = row.try_get("kind").map_err(Error::storage)?;
-    let mentions_raw: Option<String> = row.try_get("mentions").ok();
+    let mentions_raw: Option<serde_json::Value> = row.try_get("mentions").ok();
     let mentions = mentions_raw
-        .and_then(|m| serde_json::from_str::<Vec<i64>>(&m).ok())
+        .and_then(|value| serde_json::from_value::<Vec<i64>>(value).ok())
         .unwrap_or_default();
     Ok(Message {
         id: row.try_get("id").map_err(Error::storage)?,
@@ -525,7 +526,7 @@ impl ConversationRepo for MySqlStore {
         )
         .bind(member.conversation_id)
         .bind(member.user_id)
-        .bind(member.last_read_seq as i64)
+        .bind(member.last_read_seq)
         .bind(opt_naive(member.muted_until))
         .bind(naive(member.joined_at))
         .execute(&self.pool)
@@ -573,10 +574,10 @@ impl ConversationRepo for MySqlStore {
             "UPDATE conversation_members SET last_read_seq = ?
              WHERE conversation_id = ? AND user_id = ? AND last_read_seq < ?",
         )
-        .bind(seq as i64)
+        .bind(seq)
         .bind(conversation_id)
         .bind(user_id)
-        .bind(seq as i64)
+        .bind(seq)
         .execute(&self.pool)
         .await
         .map_err(Error::storage)?;
@@ -623,13 +624,15 @@ impl MessageRepo for MySqlStore {
         )
         .bind(message.id)
         .bind(message.conversation_id)
-        .bind(message.seq as i64)
+        .bind(message.seq)
         .bind(message.sender_id)
         .bind(&message.client_msg_id)
         .bind(message_kind_str(message.kind))
         .bind(&message.content)
         .bind(message.attachment_id)
-        .bind(serde_json::to_string(&message.mentions).map_err(Error::storage)?)
+        .bind(serde_json::Value::Array(
+            message.mentions.iter().map(|m| serde_json::json!(m)).collect(),
+        ))
         .bind(naive(message.created_at))
         .bind(opt_naive(message.edited_at))
         .bind(opt_naive(message.deleted_at))
@@ -693,7 +696,7 @@ impl MessageRepo for MySqlStore {
                  ) t ORDER BY seq ASC",
             )
             .bind(conversation_id)
-            .bind(before as i64)
+            .bind(before)
             .bind(limit as i64)
             .fetch_all(self.read_pool())
             .await
@@ -703,7 +706,7 @@ impl MessageRepo for MySqlStore {
                  ORDER BY seq ASC LIMIT ?",
             )
             .bind(conversation_id)
-            .bind(after.unwrap_or(0) as i64)
+            .bind(after.unwrap_or(0))
             .bind(limit as i64)
             .fetch_all(self.read_pool())
             .await
@@ -769,7 +772,7 @@ impl MessageRepo for MySqlStore {
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND seq > ?",
         )
         .bind(conversation_id)
-        .bind(after as i64)
+        .bind(after)
         .fetch_one(self.read_pool())
         .await
         .map_err(Error::storage)?;
@@ -777,21 +780,23 @@ impl MessageRepo for MySqlStore {
     }
 
     async fn next_seq(&self, conversation_id: i64) -> Result<u64> {
-        // LAST_INSERT_ID(expr) makes the increment observable atomically.
+        // `LAST_INSERT_ID()` is scoped to a single MySQL connection, so the
+        // increment and the read must share the same acquired connection.
+        let mut conn = self.pool.acquire().await.map_err(Error::storage)?;
         sqlx::query(
             "INSERT INTO conversation_sequences (conversation_id, seq)
              VALUES (?, LAST_INSERT_ID(1))
              ON DUPLICATE KEY UPDATE seq = LAST_INSERT_ID(seq + 1)",
         )
         .bind(conversation_id)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(Error::storage)?;
-        let value: i64 = sqlx::query_scalar("SELECT LAST_INSERT_ID()")
-            .fetch_one(&self.pool)
+        let value: u64 = sqlx::query_scalar("SELECT LAST_INSERT_ID()")
+            .fetch_one(&mut *conn)
             .await
             .map_err(Error::storage)?;
-        Ok(value as u64)
+        Ok(value)
     }
 }
 
@@ -1150,7 +1155,7 @@ impl AttachmentRepo for MySqlStore {
         .bind(attachment.id)
         .bind(attachment.owner_id)
         .bind(&attachment.filename)
-        .bind(attachment.size as i64)
+        .bind(attachment.size)
         .bind(&attachment.mime)
         .bind(&attachment.sha256)
         .bind(&attachment.storage_key)

@@ -69,7 +69,13 @@ async fn forward_pubsub(client: Client, tx: broadcast::Sender<BusMessage>) {
         }
         let mut stream = pubsub.on_message();
         while let Some(msg) = stream.next().await {
-            let topic = msg.get_channel_name().to_string();
+            let channel = msg.get_channel_name();
+            // Strip the transport prefix so subscribers see the logical topic
+            // (`delivery`, `presence`, ...) consistently with the in-memory bus.
+            let topic = channel
+                .strip_prefix(BUS_CHANNEL_PREFIX)
+                .unwrap_or(channel)
+                .to_string();
             let payload: String = msg.get_payload().unwrap_or_default();
             let _ = tx.send(BusMessage { topic, payload });
         }
