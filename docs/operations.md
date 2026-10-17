@@ -15,6 +15,9 @@ Configuration comes from environment variables (optionally loaded from
 | `HTTP_BIND` | HTTP listen address | `0.0.0.0:8080` |
 | `RUST_LOG` | Log level (`error`…`trace`) | `info` |
 | `PLUGIN_DIR` | Directory scanned for server plugin manifests | `plugins` |
+| `PLUGIN_HOOK_TIMEOUT_MS` | Deadline for one server-plugin hook call (`0` disables it) | `500` |
+| `ADMIN_USER_IDS` | Comma-separated user ids allowed to enable server plugins | — |
+| `MESSAGE_GUARD_WORDS` | Comma-separated blocked words for the built-in message guard | — |
 | `OBJECT_STORAGE_DIR` | Local object storage root for development | `data/objects` |
 
 `MYSQL_SHARDS` example — two shards, the first with two read replicas:
@@ -32,7 +35,8 @@ persist across restarts.
 - **MySQL** — the required production datastore. One or more shards, each with
   an optional set of read replicas. Every shard needs the full schema: apply
   migrations from `deploy/sql/migrations` to **each shard's primary** before
-  starting a node. See ADR 0006 for routing and shard keys.
+  starting a node. See ADR 0006 for routing and shard keys. Plugin enablement
+  and plugin key/value state are global and live on the first shard.
 - **Redis** — optional cache, presence store, connection registry, rate-limit
   counters, and fan-out transport. A single node (`REDIS_URL`) and a Redis
   Cluster (`REDIS_CLUSTER_NODES`) are both supported. When `REDIS_ENABLED=false`

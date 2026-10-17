@@ -115,7 +115,10 @@ where they are installed and how far their effects reach:
   backend. A server plugin runs server-side and **must be deployed and enabled
   on the server** before it has any effect. Clients cannot install server
   plugins, and a server plugin may add or change behavior for all connected
-  users.
+  users. Server plugins hook message delivery, registration, and group
+  creation; a before-persist hook can reject a message or rewrite its content,
+  and plugins can read profiles and conversations or keep plugin-scoped state
+  through a small read-only host API.
 
 In short: **client plugins are user-installed and local (globally applied on
 that client, with no server impact), while server plugins are
