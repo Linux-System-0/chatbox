@@ -69,7 +69,7 @@ object ClientPluginParser {
 	private val json = Json { ignoreUnknownKeys = true }
 	private val namePattern = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 	private val localePattern = Regex("^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
-	const colorPattern = Regex("^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+	private val colorPattern = Regex("^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 	val themeColorKeys: Set<String> = setOf(
 		"background",

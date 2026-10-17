@@ -28,6 +28,8 @@ data class Session(
 	val refreshToken: String,
 	val sessionId: String,
 	val deviceId: Long,
+	/** The server origin these tokens belong to (see docs/android-network-security.md §13). */
+	val origin: String,
 )
 
 @Serializable

@@ -15,13 +15,11 @@ android {
 		targetSdk = 35
 		versionCode = 1
 		versionName = "0.1.0"
-		// 10.0.2.2 is the host loopback as seen from the Android emulator.
-		buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8080\"")
+		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 	}
 
 	buildFeatures {
 		compose = true
-		buildConfig = true
 	}
 
 	compileOptions {
@@ -52,4 +50,14 @@ dependencies {
 	implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
 
 	debugImplementation("androidx.compose.ui:ui-tooling")
+
+	testImplementation("junit:junit:4.13.2")
+	testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+
+	androidTestImplementation("androidx.test:core:1.6.1")
+	androidTestImplementation("androidx.test:runner:1.6.2")
+	androidTestImplementation("androidx.test.ext:junit:1.2.1")
+	androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+	androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+	androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

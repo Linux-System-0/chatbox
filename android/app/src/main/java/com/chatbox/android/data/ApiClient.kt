@@ -5,20 +5,18 @@ import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
-import java.util.concurrent.TimeUnit
 
-/** Builds the Retrofit-backed API client. */
+/**
+ * Builds the Retrofit API for one origin using the shared, policy-enforcing
+ * OkHttp client. The client is never constructed here (see ADR 0008).
+ */
 object ApiClient {
 	private val json = Json {
 		ignoreUnknownKeys = true
 		explicitNulls = false
 	}
 
-	fun create(baseUrl: String): ChatBoxApi {
-		val client = OkHttpClient.Builder()
-			.connectTimeout(15, TimeUnit.SECONDS)
-			.readTimeout(30, TimeUnit.SECONDS)
-			.build()
+	fun create(baseUrl: String, client: OkHttpClient): ChatBoxApi {
 		return Retrofit.Builder()
 			.baseUrl(baseUrl.trimEnd('/') + "/")
 			.client(client)

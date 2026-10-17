@@ -37,10 +37,11 @@ sealed interface ServerFrame {
 class ChatSocket(
 	private val baseUrl: String,
 	private val session: Session,
+	private val sharedClient: OkHttpClient,
 	private val onFrame: (ServerFrame) -> Unit,
 	private val onStatus: (String) -> Unit,
 ) {
-	private val client = OkHttpClient.Builder()
+	private val client = sharedClient.newBuilder()
 		.pingInterval(25, TimeUnit.SECONDS)
 		.build()
 	private val handler = Handler(Looper.getMainLooper())
@@ -52,7 +53,9 @@ class ChatSocket(
 	fun connect() {
 		closed = false
 		onStatus("connecting")
-		val wsUrl = baseUrl.replaceFirst("http", "ws").trimEnd('/') + "/ws"
+		// OkHttp expects an http(s) URL for the upgrade request; the policy
+		// interceptor evaluates it as a cleartext or TLS hop.
+		val wsUrl = baseUrl.trimEnd('/') + "/ws"
 		val request = Request.Builder().url(wsUrl).build()
 		socket = client.newWebSocket(request, object : WebSocketListener() {
 			override fun onOpen(webSocket: WebSocket, response: Response) {

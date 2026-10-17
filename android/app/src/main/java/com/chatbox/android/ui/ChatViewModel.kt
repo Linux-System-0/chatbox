@@ -4,23 +4,44 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.chatbox.android.BuildConfig
 import com.chatbox.android.data.ApiClient
 import com.chatbox.android.data.AuthResponse
+import com.chatbox.android.data.ChatBoxApi
 import com.chatbox.android.data.ConversationView
 import com.chatbox.android.data.LoginRequest
 import com.chatbox.android.data.Message
 import com.chatbox.android.data.ReadRequest
-import com.chatbox.android.data.RegisterRequest
 import com.chatbox.android.data.RefreshRequest
+import com.chatbox.android.data.RegisterRequest
 import com.chatbox.android.data.Session
 import com.chatbox.android.data.SessionStore
-import com.chatbox.android.realtime.ChatSocket
-import com.chatbox.android.realtime.ServerFrame
+import com.chatbox.android.network.AddressException
+import com.chatbox.android.network.AllowlistEntry
+import com.chatbox.android.network.AllowlistKind
+import com.chatbox.android.network.CertificateInfo
+import com.chatbox.android.network.Certificates
+import com.chatbox.android.network.CleartextBlockedException
+import com.chatbox.android.network.FingerprintChangedException
+import com.chatbox.android.network.FingerprintRequiredException
+import com.chatbox.android.network.HealthProbe
+import com.chatbox.android.network.HostMatcher
+import com.chatbox.android.network.NetworkClientFactory
+import com.chatbox.android.network.NetworkPolicy
+import com.chatbox.android.network.NetworkPolicyStore
+import com.chatbox.android.network.ProbeFailure
+import com.chatbox.android.network.ProbeFailureKind
+import com.chatbox.android.network.ProbeOutcome
+import com.chatbox.android.network.ServerAddress
+import com.chatbox.android.network.ServerSettingsStore
 import com.chatbox.android.plugins.ClientPlugin
 import com.chatbox.android.plugins.ClientPluginStore
 import com.chatbox.android.plugins.ClientPlugins
 import com.chatbox.android.plugins.MAX_CLIENT_PLUGIN_BYTES
+import com.chatbox.android.realtime.ChatSocket
+import com.chatbox.android.realtime.ServerFrame
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.security.cert.CertificateException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,9 +49,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import javax.net.ssl.SSLPeerUnverifiedException
+import okhttp3.OkHttpClient
 import retrofit2.HttpException
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
+
+const val DEFAULT_SERVER_HINT = "10.0.2.2:8080"
+
+/** A fingerprint confirmation the user must answer. */
+data class FingerprintPrompt(
+	val address: ServerAddress,
+	val info: CertificateInfo,
+	val changed: Boolean,
+	val expected: String? = null,
+)
 
 data class ChatUiState(
 	val session: Session? = null,
@@ -43,28 +74,346 @@ data class ChatUiState(
 	val plugins: List<ClientPlugin> = emptyList(),
 	val error: String? = null,
 	val busy: Boolean = false,
+	val server: ServerAddress? = null,
+	val serverPrefill: String = DEFAULT_SERVER_HINT,
+	val policy: NetworkPolicy = NetworkPolicy(),
+	val verificationDisabledAt: Long? = null,
+	val probing: Boolean = false,
+	val probeFailure: ProbeFailure? = null,
+	val fingerprintPrompt: FingerprintPrompt? = null,
+	val cleartextPrompt: ServerAddress? = null,
+	val serverError: String? = null,
+	val trustPrompt: CertificateInfo? = null,
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
-	private val api = ApiClient.create(BuildConfig.API_BASE_URL)
-	private val store = SessionStore(application)
+	private val serverStore = ServerSettingsStore(application)
+	private val sessionStore = SessionStore(application)
+	private val policyStore = NetworkPolicyStore(application)
 	private val pluginStore = ClientPluginStore(application)
 	private val _state = MutableStateFlow(ChatUiState())
 	val state: StateFlow<ChatUiState> = _state.asStateFlow()
+	private var client: OkHttpClient? = null
+	private var api: ChatBoxApi? = null
 	private var socket: ChatSocket? = null
+	private var capture = com.chatbox.android.network.CertificateCapture()
+	private var pendingAddress: ServerAddress? = null
 
 	init {
-		store.load()?.let { session ->
-			_state.update { it.copy(session = session) }
-			applyPlugins(session)
+		val policy = policyStore.policy()
+		val server = serverStore.load()
+		_state.update {
+			it.copy(
+				server = server,
+				serverPrefill = server?.origin ?: DEFAULT_SERVER_HINT,
+				policy = policy,
+				verificationDisabledAt = policyStore.verificationDisabledAt(),
+			)
+		}
+		if (server == null) {
+			// A session is meaningless without the origin it belongs to.
+			sessionStore.clear()
+		}
+		if (server != null) {
+			configureNetwork(server)
+			val session = sessionStore.load(server)
+			if (session != null) {
+				_state.update { it.copy(session = session) }
+				applyPlugins(session)
+				connect(session)
+				refresh()
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------------
+	// Server setup
+	// ---------------------------------------------------------------------
+
+	/** Validate the address and start the consent/probe flow. */
+	fun submitServer(raw: String, scheme: String) {
+		val selected = ServerAddress.Scheme.fromWire(scheme)
+		if (selected == null) {
+			_state.update { it.copy(serverError = "unsupported scheme") }
+			return
+		}
+		val address = try {
+			ServerAddress.parse(raw, selected)
+		} catch (error: AddressException) {
+			_state.update { it.copy(serverError = error.message, probeFailure = null) }
+			return
+		}
+		_state.update {
+			it.copy(serverError = null, error = null, probeFailure = null, trustPrompt = null)
+		}
+		val policy = policyStore.policy()
+		if (address.isCleartext && !policy.verificationDisabled && !policy.allowsCleartextHost(address.host)) {
+			_state.update { it.copy(cleartextPrompt = address) }
+			return
+		}
+		probeCandidate(address)
+	}
+
+	/** The user accepted the cleartext warning; remember the host and continue. */
+	fun confirmCleartextConsent() {
+		val address = _state.value.cleartextPrompt ?: return
+		val host = address.host.removeSurrounding("[", "]")
+		val kind = if (HostMatcher.isLiteralHost(host)) AllowlistKind.IP else AllowlistKind.DNS
+		runCatching { policyStore.addAllowlistEntry(kind, host) }
+			.onSuccess { updatePolicyState() }
+			.onFailure { error ->
+				_state.update { it.copy(cleartextPrompt = null, serverError = error.message) }
+				return
+			}
+		_state.update { it.copy(cleartextPrompt = null) }
+		probeCandidate(address)
+	}
+
+	fun cancelCleartextConsent() = _state.update { it.copy(cleartextPrompt = null) }
+
+	fun retryProbe() {
+		pendingAddress?.let { probeCandidate(it) }
+	}
+
+	fun dismissProbeFailure() = _state.update { it.copy(probeFailure = null) }
+
+	/** Add the certificate from a trust failure to the custom CA list and retry. */
+	fun trustPresentedCertificate() {
+		val failure = _state.value.probeFailure ?: return
+		val info = failure.certificate ?: return
+		trustCertificate(info)
+		_state.update { it.copy(probeFailure = null) }
+		pendingAddress?.let { probeCandidate(it) }
+	}
+
+	/** Trust a certificate shown by the global trust prompt. */
+	fun confirmTrustPrompt() {
+		val info = _state.value.trustPrompt ?: return
+		trustCertificate(info)
+		_state.update { it.copy(trustPrompt = null) }
+		val session = _state.value.session
+		if (session != null) {
 			connect(session)
 			refresh()
 		}
 	}
 
+	fun dismissTrustPrompt() = _state.update { it.copy(trustPrompt = null) }
+
+	private fun trustCertificate(info: CertificateInfo) {
+		policyStore.addCustomCertificate(info.certificate)
+		updatePolicyState()
+		_state.value.server?.let { configureNetwork(it) }
+	}
+
+	fun confirmFingerprint() {
+		val prompt = _state.value.fingerprintPrompt ?: return
+		policyStore.confirmFingerprint(prompt.address.origin, prompt.info.sha256)
+		_state.update { it.copy(fingerprintPrompt = null) }
+		val server = _state.value.server
+		if (server != null && server.origin == prompt.address.origin) {
+			_state.value.session?.let { session ->
+				connect(session)
+				refresh()
+			}
+		} else {
+			probeCandidate(prompt.address)
+		}
+	}
+
+	fun cancelFingerprint() = _state.update { it.copy(fingerprintPrompt = null) }
+
+	/** Leave the current server and show the server screen again. */
+	fun changeServer() {
+		val previous = _state.value.server
+		logout()
+		serverStore.clear()
+		client = null
+		api = null
+		pendingAddress = null
+		_state.update {
+			it.copy(
+				server = null,
+				serverPrefill = previous?.origin ?: DEFAULT_SERVER_HINT,
+				probeFailure = null,
+				fingerprintPrompt = null,
+				cleartextPrompt = null,
+				serverError = null,
+			)
+		}
+	}
+
+	private fun probeCandidate(address: ServerAddress) {
+		pendingAddress = address
+		viewModelScope.launch {
+			_state.update { it.copy(probing = true, probeFailure = null, serverError = null, error = null) }
+			val current = _state.value.server
+			if (current != null && current.origin != address.origin && _state.value.session != null) {
+				logout()
+			}
+			val network = configureNetwork(address)
+			val outcome = HealthProbe(network, capture).probe(address.origin)
+			_state.update { it.copy(probing = false) }
+			when (outcome) {
+				is ProbeOutcome.Success -> acceptServer(address)
+				is ProbeOutcome.Failure -> {
+					val failure = outcome.failure
+					when (failure.kind) {
+						ProbeFailureKind.FingerprintRequired -> {
+							val info = failure.certificate
+							if (info == null) {
+								_state.update { it.copy(probeFailure = failure) }
+							} else {
+								_state.update {
+									it.copy(
+										fingerprintPrompt = FingerprintPrompt(address, info, changed = false),
+									)
+								}
+							}
+						}
+
+						ProbeFailureKind.FingerprintChanged -> {
+							val info = failure.certificate
+							if (info == null) {
+								_state.update { it.copy(probeFailure = failure) }
+							} else {
+								_state.update {
+									it.copy(
+										fingerprintPrompt = FingerprintPrompt(
+											address,
+											info,
+											changed = true,
+											expected = failure.expectedFingerprint,
+										),
+									)
+								}
+							}
+						}
+
+						else -> _state.update { it.copy(probeFailure = failure) }
+					}
+				}
+			}
+		}
+	}
+
+	private fun acceptServer(address: ServerAddress) {
+		serverStore.save(address)
+		_state.update {
+			it.copy(
+				server = address,
+				serverPrefill = address.origin,
+				probeFailure = null,
+				fingerprintPrompt = null,
+				cleartextPrompt = null,
+				serverError = null,
+			)
+		}
+		if (_state.value.session == null) {
+			val session = sessionStore.load(address)
+			if (session != null) {
+				_state.update { it.copy(session = session) }
+				applyPlugins(session)
+				connect(session)
+				refresh()
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------------
+	// Network settings
+	// ---------------------------------------------------------------------
+
+	fun setTrustSystemCAs(enabled: Boolean) {
+		policyStore.setTrustSystemCAs(enabled)
+		afterPolicyChange()
+	}
+
+	fun addAllowlistEntry(kind: AllowlistKind, input: String) {
+		runCatching { policyStore.addAllowlistEntry(kind, input) }
+			.onSuccess { afterPolicyChange() }
+			.onFailure { error -> _state.update { it.copy(error = error.message) } }
+	}
+
+	fun removeAllowlistEntry(entry: AllowlistEntry) {
+		policyStore.removeAllowlistEntry(entry.serialized)
+		afterPolicyChange()
+	}
+
+	fun importCustomCertificates(bytes: ByteArray) {
+		runCatching {
+			val certificates = Certificates.parse(bytes)
+			certificates.map { policyStore.addCustomCertificate(it) }
+		}.onSuccess { afterPolicyChange() }
+			.onFailure { error -> _state.update { it.copy(error = error.message) } }
+	}
+
+	/** Read a certificate chosen with the system file picker. */
+	fun importCustomCertificate(uri: Uri) = viewModelScope.launch {
+		runCatching {
+			withContext(Dispatchers.IO) {
+				getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+					it.readCertificateBytes()
+				} ?: error("cannot read the certificate file")
+			}
+		}.onSuccess { importCustomCertificates(it) }
+			.onFailure { error ->
+				_state.update { it.copy(error = error.message ?: "cannot read the certificate file") }
+			}
+	}
+
+	fun removeCustomCertificate(info: CertificateInfo) {
+		policyStore.removeCustomCertificate(info.sha256)
+		afterPolicyChange()
+	}
+
+	fun setVerificationDisabled(disabled: Boolean) {
+		policyStore.setVerificationDisabled(disabled)
+		afterPolicyChange()
+	}
+
+	/**
+	 * Re-create the shared client so new connections use the updated policy and
+	 * reconnect the WebSocket when a session is active.
+	 */
+	private fun afterPolicyChange() {
+		updatePolicyState()
+		val server = _state.value.server ?: return
+		configureNetwork(server)
+		_state.value.session?.let { connect(it) }
+	}
+
+	private fun updatePolicyState() {
+		_state.update {
+			it.copy(
+				policy = policyStore.policy(),
+				verificationDisabledAt = policyStore.verificationDisabledAt(),
+			)
+		}
+	}
+
+	private fun configureNetwork(address: ServerAddress): OkHttpClient {
+		val factory = NetworkClientFactory(policyStore.policy(), address.origin, policyStore)
+		val network = factory.create()
+		client = network
+		api = ApiClient.create(address.origin, network)
+		capture = factory.capture
+		_state.update {
+			it.copy(
+				policy = factory.policy,
+				verificationDisabledAt = policyStore.verificationDisabledAt(),
+			)
+		}
+		return network
+	}
+
+	// ---------------------------------------------------------------------
+	// Authentication and chat
+	// ---------------------------------------------------------------------
+
 	fun login(userId: String, password: String) = viewModelScope.launch {
 		_state.update { it.copy(busy = true, error = null) }
-		runCatching { api.login(LoginRequest(userId = userId, password = password)) }
+		runCatching { requireApi().login(LoginRequest(userId = userId, password = password)) }
 			.onSuccess { authenticate(it) }
 			.onFailure { fail(it) }
 		_state.update { it.copy(busy = false) }
@@ -73,7 +422,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	fun register(userId: String, password: String, displayName: String?) = viewModelScope.launch {
 		_state.update { it.copy(busy = true, error = null) }
 		runCatching {
-			api.register(
+			requireApi().register(
 				RegisterRequest(
 					userId = userId,
 					password = password,
@@ -87,23 +436,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun authenticate(response: AuthResponse) {
+		val server = _state.value.server ?: return
 		val session = Session(
 			user = response.user,
 			accessToken = response.tokens.accessToken,
 			refreshToken = response.tokens.refreshToken,
 			sessionId = response.tokens.sessionId,
 			deviceId = response.tokens.deviceId,
+			origin = server.origin,
 		)
-		store.save(session)
-		_state.update { it.copy(session = session) }
-		applyPlugins(session)
+		storeSession(session)
 		connect(session)
 		refresh()
 	}
 
+	private fun storeSession(session: Session) {
+		sessionStore.save(session)
+		_state.update { it.copy(session = session) }
+		applyPlugins(session)
+	}
+
 	private fun connect(session: Session) {
 		socket?.close()
-		socket = ChatSocket(BuildConfig.API_BASE_URL, session, ::onFrame, { status ->
+		val network = client ?: return
+		val server = _state.value.server ?: return
+		socket = ChatSocket(server.origin, session, network, ::onFrame, { status ->
 			_state.update { it.copy(status = status) }
 		}).also { it.connect() }
 	}
@@ -130,18 +487,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun refresh() = viewModelScope.launch {
-		runCatching { withAuth { api.conversations(it) } }
+		val client = api ?: return@launch
+		runCatching { withAuth { client.conversations(it) } }
 			.onSuccess { response -> _state.update { it.copy(conversations = response.conversations) } }
 			.onFailure { fail(it) }
 	}
 
 	fun select(conversationId: Long) = viewModelScope.launch {
+		val client = api ?: return@launch
 		_state.update { it.copy(selectedId = conversationId, messages = emptyList()) }
-		runCatching { withAuth { api.messages(it, conversationId) } }
+		runCatching { withAuth { client.messages(it, conversationId) } }
 			.onSuccess { response ->
 				_state.update { it.copy(messages = response.messages) }
 				response.messages.lastOrNull()?.let { last ->
-					runCatching { withAuth { api.markRead(it, conversationId, ReadRequest(last.seq)) } }
+					runCatching { withAuth { client.markRead(it, conversationId, ReadRequest(last.seq)) } }
 				}
 			}
 			.onFailure { fail(it) }
@@ -156,21 +515,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	fun closeConversation() = _state.update { it.copy(selectedId = null, messages = emptyList()) }
 
 	fun startDirect(userId: String) = viewModelScope.launch {
-		runCatching { withAuth { api.createDirect(it, com.chatbox.android.data.DirectRequest(userId)) } }
+		val client = api ?: return@launch
+		runCatching { withAuth { client.createDirect(it, com.chatbox.android.data.DirectRequest(userId)) } }
 			.onSuccess { response -> refresh(); select(response.conversation.id) }
 			.onFailure { fail(it) }
 	}
 
 	fun addContact(userId: String) = viewModelScope.launch {
-		runCatching { withAuth { api.addContact(it, com.chatbox.android.data.DirectRequest(userId)) } }
+		val client = api ?: return@launch
+		runCatching { withAuth { client.addContact(it, com.chatbox.android.data.DirectRequest(userId)) } }
 			.onFailure { fail(it) }
 	}
 
 	fun logout() {
 		socket?.close()
 		socket = null
-		store.clear()
-		_state.value = ChatUiState()
+		sessionStore.clear()
+		_state.update {
+			it.copy(
+				session = null,
+				conversations = emptyList(),
+				messages = emptyList(),
+				selectedId = null,
+				status = "offline",
+				error = null,
+				busy = false,
+			)
+		}
 	}
 
 	fun setLocale(locale: String) {
@@ -264,6 +635,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
 	fun dismissError() = _state.update { it.copy(error = null) }
 
+	private fun requireApi(): ChatBoxApi =
+		api ?: throw IllegalStateException("choose a server before signing in")
+
 	/**
 	 * Run an authenticated call, refreshing the access token once on a 401 so a
 	 * long-lived session survives access-token expiry.
@@ -274,25 +648,79 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 			block("Bearer ${session.accessToken}")
 		} catch (e: HttpException) {
 			if (e.code() != 401) throw e
-			val refreshed = api.refresh(RefreshRequest(session.refreshToken))
+			val refreshed = requireApi().refresh(RefreshRequest(session.refreshToken))
 			val next = session.copy(
 				accessToken = refreshed.tokens.accessToken,
 				refreshToken = refreshed.tokens.refreshToken,
 				sessionId = refreshed.tokens.sessionId,
 				deviceId = refreshed.tokens.deviceId,
 			)
-			store.save(next)
-			_state.update { it.copy(session = next) }
+			storeSession(next)
 			block("Bearer ${next.accessToken}")
 		}
 	}
 
 	private fun fail(error: Throwable) {
-		val message = when (error) {
-			is HttpException -> "request failed (${error.code()})"
+		val causes = generateSequence(error) { it.cause }.toList()
+		val required = causes.filterIsInstance<FingerprintRequiredException>().firstOrNull()
+		if (required != null) {
+			val server = _state.value.server
+			if (server != null) {
+				_state.update {
+					it.copy(fingerprintPrompt = FingerprintPrompt(server, required.info, changed = false))
+				}
+				return
+			}
+		}
+		val changed = causes.filterIsInstance<FingerprintChangedException>().firstOrNull()
+		if (changed != null) {
+			val server = _state.value.server
+			if (server != null) {
+				_state.update {
+					it.copy(
+						fingerprintPrompt = FingerprintPrompt(
+							server,
+							changed.info,
+							changed = true,
+							expected = changed.expected,
+						),
+					)
+				}
+				return
+			}
+		}
+		val certificateProblem = causes.any {
+			it is CertificateException || it is SSLPeerUnverifiedException
+		}
+		if (certificateProblem) {
+			val info = capture.last()
+			if (info != null) {
+				_state.update { it.copy(trustPrompt = info, error = null) }
+				return
+			}
+		}
+		val message = when {
+			error is HttpException -> "request failed (${error.code()})"
+			causes.any { it is CleartextBlockedException } -> error.message ?: "cleartext is not allowed"
 			else -> error.message ?: "request failed"
 		}
 		_state.update { it.copy(error = message) }
+	}
+
+	private fun InputStream.readCertificateBytes(): ByteArray {
+		val output = ByteArrayOutputStream()
+		val buffer = ByteArray(8192)
+		var total = 0
+		while (true) {
+			val read = read(buffer)
+			if (read < 0) break
+			total += read
+			require(total <= Certificates.MAX_FILE_BYTES) {
+				"the certificate file is too large (max 64 KiB)"
+			}
+			output.write(buffer, 0, read)
+		}
+		return output.toByteArray()
 	}
 
 	private fun InputStream.readLimited(max: Int): ByteArray {
@@ -313,4 +741,5 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 		socket?.close()
 		super.onCleared()
 	}
+
 }

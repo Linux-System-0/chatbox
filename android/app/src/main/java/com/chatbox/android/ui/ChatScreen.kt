@@ -31,14 +31,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.chatbox.android.plugins.ClientPlugins
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
+fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel, onOpenNetworkSettings: () -> Unit) {
 	val tr = { key: String -> ClientPlugins.translate(state.plugins, state.locale, key) }
 	var draft by remember { mutableStateOf("") }
 	var newChat by remember { mutableStateOf("") }
@@ -52,8 +55,19 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 	Scaffold(
 		topBar = {
 			TopAppBar(
-				title = { Text(tr("app_name")) },
+				title = {
+					Column {
+						Text(tr("app_name"))
+						state.server?.let { server ->
+							Text(
+								server.origin,
+								style = MaterialTheme.typography.labelSmall,
+							)
+						}
+					}
+				},
 				actions = {
+					TextButton(onClick = onOpenNetworkSettings) { Text("⚙") }
 					Box {
 						TextButton(onClick = { languageMenu = true }) { Text("🌐 ${state.locale}") }
 						DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
@@ -91,6 +105,24 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 		},
 	) { padding ->
 		Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+			state.verificationDisabledAt?.let { since ->
+				Row(
+					modifier = Modifier
+						.fillMaxWidth()
+						.background(Color(0xFFB00020))
+						.padding(12.dp),
+					verticalAlignment = Alignment.CenterVertically,
+				) {
+					Text(
+						tr("verification_disabled_banner").replace(
+							"{time}",
+							DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+								.format(Date(since)),
+						),
+						color = Color.White,
+					)
+				}
+			}
 			state.error?.let { message ->
 				Row(
 					modifier = Modifier
@@ -104,7 +136,7 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 				}
 			}
 			Text(
-				"status: ${state.status}",
+				tr(state.status),
 				modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
 				style = MaterialTheme.typography.labelSmall,
 			)

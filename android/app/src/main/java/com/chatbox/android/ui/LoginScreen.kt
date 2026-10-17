@@ -17,21 +17,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.chatbox.android.plugins.ClientPlugins
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun LoginScreen(
 	state: ChatUiState,
 	onLogin: (String, String) -> Unit,
 	onRegister: (String, String, String?) -> Unit,
+	onOpenNetworkSettings: () -> Unit,
+	onChangeServer: () -> Unit,
+	tr: (String) -> String,
 ) {
 	var mode by remember { mutableStateOf("login") }
 	var userId by remember { mutableStateOf("") }
 	var password by remember { mutableStateOf("") }
 	var displayName by remember { mutableStateOf("") }
-	val tr = { key: String -> ClientPlugins.translate(state.plugins, state.locale, key) }
 
 	Column(
 		modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -39,6 +43,18 @@ fun LoginScreen(
 		horizontalAlignment = Alignment.CenterHorizontally,
 	) {
 		Text(tr("app_name"), style = MaterialTheme.typography.headlineMedium)
+		state.server?.let { server ->
+			Text(
+				server.origin,
+				style = MaterialTheme.typography.bodyMedium,
+				fontFamily = FontFamily.Monospace,
+			)
+		}
+		RowOfLinks(
+			onOpenNetworkSettings = onOpenNetworkSettings,
+			onChangeServer = onChangeServer,
+			tr = tr,
+		)
 		OutlinedTextField(
 			value = userId,
 			onValueChange = { userId = it },
@@ -76,6 +92,28 @@ fun LoginScreen(
 		TextButton(onClick = { mode = if (mode == "login") "register" else "login" }) {
 			Text(if (mode == "login") tr("register") else tr("login"))
 		}
+		state.verificationDisabledAt?.let { since ->
+			Text(
+				tr("verification_disabled_banner").replace(
+					"{time}",
+					DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+						.format(Date(since)),
+				),
+				color = MaterialTheme.colorScheme.error,
+			)
+		}
 		state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+	}
+}
+
+@Composable
+private fun RowOfLinks(
+	onOpenNetworkSettings: () -> Unit,
+	onChangeServer: () -> Unit,
+	tr: (String) -> String,
+) {
+	Column(horizontalAlignment = Alignment.CenterHorizontally) {
+		TextButton(onClick = onOpenNetworkSettings) { Text(tr("network_settings")) }
+		TextButton(onClick = onChangeServer) { Text(tr("change_server")) }
 	}
 }
