@@ -1,8 +1,8 @@
 //! HTTP error translation.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chatbox_core::error::Error;
 use serde_json::json;
 

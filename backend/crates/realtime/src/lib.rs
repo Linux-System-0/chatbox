@@ -9,18 +9,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::Router;
 use axum::extract::State;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use chatbox_core::error::Error;
 use chatbox_core::infra::{ConnectionInfo, MessageBus};
 use chatbox_core::protocol::{ClientFrame, Delivery, ServerFrame, TOPIC_DELIVERY, TOPIC_PRESENCE};
 use chatbox_core::services::{AuthContext, SendRequest, Services};
 use chatbox_plugin::{HookContext, HookOutcome, PluginHost};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const OUTBOUND_QUEUE: usize = 256;

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::{normalize_text, AuthContext, Services};
+use super::{AuthContext, Services, normalize_text};
 use crate::error::{Error, Result};
 use crate::model::{
     Conversation, ConversationKind, ConversationMember, Message, MessageKind, OutboxEvent,
@@ -117,20 +117,20 @@ impl Services {
                 .conversations
                 .list_members(req.conversation_id)
                 .await?;
-            if let Some(other) = members.iter().find(|m| m.user_id != ctx.user_id) {
-                if self.is_blocked_between(ctx.user_id, other.user_id).await? {
-                    return Err(Error::Forbidden("direct messaging is blocked".into()));
-                }
+            if let Some(other) = members.iter().find(|m| m.user_id != ctx.user_id)
+                && self.is_blocked_between(ctx.user_id, other.user_id).await?
+            {
+                return Err(Error::Forbidden("direct messaging is blocked".into()));
             }
         }
 
         let now = self.now();
-        if let Some(until) = member.muted_until {
-            if until > now {
-                return Err(Error::Forbidden(
-                    "you are muted in this conversation".into(),
-                ));
-            }
+        if let Some(until) = member.muted_until
+            && until > now
+        {
+            return Err(Error::Forbidden(
+                "you are muted in this conversation".into(),
+            ));
         }
 
         let (content, mentions) = self.prepare_payload(ctx, &conversation, &req).await?;
@@ -332,10 +332,10 @@ impl Services {
                     .list_members(conversation.id)
                     .await?;
                 for m in members {
-                    if m.user_id != viewer {
-                        if let Some(user) = self.stores.users.get(m.user_id).await? {
-                            return Ok(user.effective_display_name().to_string());
-                        }
+                    if m.user_id != viewer
+                        && let Some(user) = self.stores.users.get(m.user_id).await?
+                    {
+                        return Ok(user.effective_display_name().to_string());
                     }
                 }
                 Ok("Direct".to_string())

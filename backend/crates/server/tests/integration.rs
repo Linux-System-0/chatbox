@@ -131,16 +131,17 @@ async fn registration_login_and_duplicate_id() {
         .await
         .expect("login");
     assert_eq!(user.user_id, "alice");
-    assert!(h
-        .services
-        .login(LoginInput {
-            user_id: "alice".into(),
-            password: "wrong-password".into(),
-            device_name: "web".into(),
-            platform: Platform::Web,
-        })
-        .await
-        .is_err());
+    assert!(
+        h.services
+            .login(LoginInput {
+                user_id: "alice".into(),
+                password: "wrong-password".into(),
+                device_name: "web".into(),
+                platform: Platform::Web,
+            })
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -242,20 +243,21 @@ async fn block_prevents_direct_messages() {
     assert!(matches!(err, chatbox_core::Error::Forbidden(_)));
 
     h.services.unblock_user(&bob, "alice").await.unwrap();
-    assert!(h
-        .services
-        .send_message(
-            &alice,
-            SendRequest {
-                conversation_id: conv.id,
-                client_msg_id: "m2".into(),
-                kind: MessageKind::Text,
-                content: Some("hi".into()),
-                attachment_id: None,
-            },
-        )
-        .await
-        .is_ok());
+    assert!(
+        h.services
+            .send_message(
+                &alice,
+                SendRequest {
+                    conversation_id: conv.id,
+                    client_msg_id: "m2".into(),
+                    kind: MessageKind::Text,
+                    content: Some("hi".into()),
+                    attachment_id: None,
+                },
+            )
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -271,11 +273,12 @@ async fn friend_request_flow_creates_contact() {
         .unwrap();
     assert_eq!(request.status, FriendRequestStatus::Pending);
     // Duplicate request rejected.
-    assert!(h
-        .services
-        .send_friend_request(&alice, "bob", None)
-        .await
-        .is_err());
+    assert!(
+        h.services
+            .send_friend_request(&alice, "bob", None)
+            .await
+            .is_err()
+    );
 
     let accepted = h
         .services
@@ -315,11 +318,12 @@ async fn group_roles_and_lifecycle() {
     assert_eq!(group.members.len(), 3);
 
     // A member cannot rename.
-    assert!(h
-        .services
-        .rename_group(&bob, group.group.id, "hacked")
-        .await
-        .is_err());
+    assert!(
+        h.services
+            .rename_group(&bob, group.group.id, "hacked")
+            .await
+            .is_err()
+    );
 
     // Rename and mute by the owner.
     h.services
@@ -333,20 +337,21 @@ async fn group_roles_and_lifecycle() {
         .unwrap();
 
     // Muted member cannot send.
-    assert!(h
-        .services
-        .send_message(
-            &bob,
-            SendRequest {
-                conversation_id: group.group.conversation_id,
-                client_msg_id: "g1".into(),
-                kind: MessageKind::Text,
-                content: Some("hello".into()),
-                attachment_id: None,
-            },
-        )
-        .await
-        .is_err());
+    assert!(
+        h.services
+            .send_message(
+                &bob,
+                SendRequest {
+                    conversation_id: group.group.conversation_id,
+                    client_msg_id: "g1".into(),
+                    kind: MessageKind::Text,
+                    content: Some("hello".into()),
+                    attachment_id: None,
+                },
+            )
+            .await
+            .is_err()
+    );
 
     // Mentions are resolved to member ids.
     h.services

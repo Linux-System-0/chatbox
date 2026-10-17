@@ -3,12 +3,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chatbox_core::Infra;
 use chatbox_core::error::Result;
 use chatbox_core::infra::{
     Cache, ConnectionRegistry, MessageBus, ObjectStorage, PresenceStore, RateLimiter,
 };
 use chatbox_core::port::Stores;
-use chatbox_core::Infra;
 
 use crate::memory::MemoryStore;
 use crate::mysql::MySqlStore;
@@ -111,18 +111,18 @@ async fn build_infra(config: &BackendConfig) -> Result<Infra> {
         config.public_base_url.clone(),
     )?);
 
-    if config.redis_enabled {
-        if let Some(url) = &config.redis_url {
-            let redis = Arc::new(RedisInfra::connect(url).await?);
-            return Ok(Infra {
-                cache: redis.clone() as Arc<dyn Cache>,
-                presence: redis.clone() as Arc<dyn PresenceStore>,
-                registry: redis.clone() as Arc<dyn ConnectionRegistry>,
-                bus: redis.clone() as Arc<dyn MessageBus>,
-                rate_limiter: redis.clone() as Arc<dyn RateLimiter>,
-                objects,
-            });
-        }
+    if config.redis_enabled
+        && let Some(url) = &config.redis_url
+    {
+        let redis = Arc::new(RedisInfra::connect(url).await?);
+        return Ok(Infra {
+            cache: redis.clone() as Arc<dyn Cache>,
+            presence: redis.clone() as Arc<dyn PresenceStore>,
+            registry: redis.clone() as Arc<dyn ConnectionRegistry>,
+            bus: redis.clone() as Arc<dyn MessageBus>,
+            rate_limiter: redis.clone() as Arc<dyn RateLimiter>,
+            objects,
+        });
     }
 
     let memory = Arc::new(MemoryStore::new());

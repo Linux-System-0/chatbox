@@ -2,21 +2,21 @@
 
 use std::time::Duration;
 
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::StatusCode;
 use axum::http::header;
 use axum::http::request::Parts;
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use chatbox_core::error::Error;
 use chatbox_core::model::{GroupRole, MessageKind, Platform, SearchQuery, SortOrder};
 use chatbox_core::services::{AuthContext, LoginInput, RegisterInput, SendRequest};
 use chatbox_plugin::{HookContext, HookOutcome};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ApiError, ApiResult};
 use crate::AppState;
+use crate::error::{ApiError, ApiResult};
 
 /// An authenticated caller extracted from the `Authorization` header.
 pub struct AuthUser(pub AuthContext);

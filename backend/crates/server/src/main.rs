@@ -8,7 +8,7 @@ mod config;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use chatbox_api::{router as api_router, AppState};
+use chatbox_api::{AppState, router as api_router};
 use chatbox_core::services::ServiceConfig;
 use chatbox_core::tokens::TokenConfig;
 use chatbox_core::{Services, Snowflake, SystemClock, TokenManager};
@@ -23,7 +23,7 @@ use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    load_env();
     init_tracing();
 
     let config = Config::from_env()?;
@@ -108,6 +108,17 @@ async fn main() -> Result<()> {
     let _ = shutdown_tx.send(true);
     tracing::info!("shutdown complete");
     Ok(())
+}
+
+fn load_env() {
+    // Load the first environment file that exists so `cargo run` works from the
+    // repository root or from `backend/`, matching the README instructions.
+    for candidate in [".env", "backend/.env", "deploy/.env", "../deploy/.env"] {
+        if std::path::Path::new(candidate).exists() {
+            let _ = dotenvy::from_filename(candidate);
+            return;
+        }
+    }
 }
 
 fn init_tracing() {

@@ -51,10 +51,10 @@ impl Services {
         if let Some(conversation_id) = query.conversation_id {
             self.require_member(conversation_id, ctx.user_id).await?;
         }
-        if let (Some(from), Some(to)) = (query.from, query.to) {
-            if from > to {
-                return Err(Error::Invalid("from must not be after to".into()));
-            }
+        if let (Some(from), Some(to)) = (query.from, query.to)
+            && from > to
+        {
+            return Err(Error::Invalid("from must not be after to".into()));
         }
         if query.sort != SortOrder::Asc && query.sort != SortOrder::Desc {
             return Err(Error::Invalid("invalid sort order".into()));

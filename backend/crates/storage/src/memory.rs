@@ -48,11 +48,7 @@ struct MemoryState {
 
 impl MemoryState {
     fn direct_key(a: i64, b: i64) -> (i64, i64) {
-        if a <= b {
-            (a, b)
-        } else {
-            (b, a)
-        }
+        if a <= b { (a, b) } else { (b, a) }
     }
 }
 
@@ -288,10 +284,10 @@ impl ConversationRepo for MemoryStore {
 
     async fn set_read_cursor(&self, conversation_id: i64, user_id: i64, seq: u64) -> Result<()> {
         let mut st = self.lock();
-        if let Some(member) = st.conv_members.get_mut(&(conversation_id, user_id)) {
-            if seq > member.last_read_seq {
-                member.last_read_seq = seq;
-            }
+        if let Some(member) = st.conv_members.get_mut(&(conversation_id, user_id))
+            && seq > member.last_read_seq
+        {
+            member.last_read_seq = seq;
         }
         Ok(())
     }
@@ -797,10 +793,10 @@ impl ConnectionRegistry for MemoryStore {
 
     async fn heartbeat(&self, user_id: i64, conn_id: &str, at: Timestamp) -> Result<()> {
         let mut st = self.lock();
-        if let Some(conns) = st.registry.get_mut(&user_id) {
-            if let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) {
-                conn.last_seen = at;
-            }
+        if let Some(conns) = st.registry.get_mut(&user_id)
+            && let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id)
+        {
+            conn.last_seen = at;
         }
         Ok(())
     }
@@ -958,26 +954,34 @@ mod tests {
             .await
             .unwrap();
         }
-        assert!(ConversationRepo::find_direct(&store, 3, 5)
-            .await
-            .unwrap()
-            .is_some());
-        assert!(ConversationRepo::find_direct(&store, 5, 3)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            ConversationRepo::find_direct(&store, 3, 5)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            ConversationRepo::find_direct(&store, 5, 3)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
     async fn rate_limit_enforced() {
         let store = MemoryStore::new();
         for _ in 0..3 {
-            assert!(RateLimiter::check(&store, "k", 3, Duration::from_secs(60))
-                .await
-                .unwrap());
+            assert!(
+                RateLimiter::check(&store, "k", 3, Duration::from_secs(60))
+                    .await
+                    .unwrap()
+            );
         }
-        assert!(!RateLimiter::check(&store, "k", 3, Duration::from_secs(60))
-            .await
-            .unwrap());
+        assert!(
+            !RateLimiter::check(&store, "k", 3, Duration::from_secs(60))
+                .await
+                .unwrap()
+        );
     }
 }

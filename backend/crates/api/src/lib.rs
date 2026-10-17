@@ -10,8 +10,8 @@ mod handlers;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
+use axum::routing::{delete, get, patch, post, put};
 use chatbox_core::services::Services;
 use chatbox_plugin::PluginHost;
 use tower_http::cors::CorsLayer;

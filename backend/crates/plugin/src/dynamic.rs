@@ -13,7 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chatbox_core::error::{Error, Result};
 
-use crate::abi::{PluginInitFn, PluginVTable, PLUGIN_API_VERSION, PLUGIN_INIT_SYMBOL};
+use crate::abi::{PLUGIN_API_VERSION, PLUGIN_INIT_SYMBOL, PluginInitFn, PluginVTable};
 use crate::{HookContext, HookOutcome, PluginInfo, ServerPlugin};
 
 /// A plugin loaded from a shared library.
@@ -40,9 +40,8 @@ impl LoadedPlugin {
     /// The caller must ensure `path` points to a valid ChatBox plugin built
     /// for the ABI in [`crate::abi`].
     pub unsafe fn load(path: &Path, manifest_info: PluginInfo) -> Result<Self> {
-        let library = Arc::new(libloading::Library::new(path).map_err(Error::storage)?);
-        let init: libloading::Symbol<PluginInitFn> = library
-            .get(PLUGIN_INIT_SYMBOL)
+        let library = Arc::new(unsafe { libloading::Library::new(path) }.map_err(Error::storage)?);
+        let init: libloading::Symbol<PluginInitFn> = unsafe { library.get(PLUGIN_INIT_SYMBOL) }
             .map_err(|e| Error::Invalid(format!("plugin missing init symbol: {e}")))?;
         let mut vtable = PluginVTable {
             api_version: 0,
@@ -54,7 +53,7 @@ impl LoadedPlugin {
             on_user_register: None,
             on_group_created: None,
         };
-        let rc = init(PLUGIN_API_VERSION, &mut vtable);
+        let rc = unsafe { init(PLUGIN_API_VERSION, &mut vtable) };
         if rc != 0 {
             return Err(Error::Invalid(format!("plugin init failed with code {rc}")));
         }

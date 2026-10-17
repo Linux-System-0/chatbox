@@ -198,10 +198,10 @@ impl ConnectionRegistry for RedisInfra {
         let mut out = Vec::new();
         for key in keys {
             let value: Option<String> = conn.get(&key).await.map_err(Error::storage)?;
-            if let Some(value) = value {
-                if let Ok(info) = serde_json::from_str::<ConnectionInfo>(&value) {
-                    out.push(info);
-                }
+            if let Some(value) = value
+                && let Ok(info) = serde_json::from_str::<ConnectionInfo>(&value)
+            {
+                out.push(info);
             }
         }
         Ok(out)

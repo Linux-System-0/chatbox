@@ -68,10 +68,10 @@ impl Services {
 
         let mut member_user_ids = vec![ctx.user_id];
         for id in member_ids {
-            if let Some(user) = self.stores.users.get_by_user_id(id).await? {
-                if !member_user_ids.contains(&user.id) {
-                    member_user_ids.push(user.id);
-                }
+            if let Some(user) = self.stores.users.get_by_user_id(id).await?
+                && !member_user_ids.contains(&user.id)
+            {
+                member_user_ids.push(user.id);
             }
         }
         for (index, user_id) in member_user_ids.iter().enumerate() {
