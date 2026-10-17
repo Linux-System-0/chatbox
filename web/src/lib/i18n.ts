@@ -1,10 +1,18 @@
-import { derived, writable } from 'svelte/store';
+import { derived, get, writable } from 'svelte/store';
+import {
+	getActiveLocale,
+	installedPlugins,
+	languagePacks,
+	setActiveLocale,
+	type PluginPackage
+} from './plugins';
 
 /**
  * Client plugin: language packs.
  *
- * Translations are a client plugin per docs/plugin-system.md: they are
- * installed and applied entirely on the client and never affect the server.
+ * Only the base English dictionary is compiled into the client. Every other
+ * language is installed at runtime from a plugin file and stored for the
+ * signed-in user (see docs/plugin-system.md).
  */
 
 export interface LanguageOption {
@@ -12,79 +20,112 @@ export interface LanguageOption {
 	label: string;
 }
 
-export const languages: LanguageOption[] = [
-	{ code: 'en', label: 'English' },
-	{ code: 'zh-CN', label: '简体中文' }
-];
-
-const builtin: Record<string, Record<string, string>> = {
-	en: {
-		app_name: 'ChatBox',
-		login: 'Sign in',
-		register: 'Create account',
-		logout: 'Sign out',
-		user_id: 'User ID',
-		password: 'Password',
-		display_name: 'Display name',
-		send: 'Send',
-		message_placeholder: 'Write a message…',
-		conversations: 'Conversations',
-		contacts: 'Contacts',
-		search: 'Search',
-		search_placeholder: 'Search messages…',
-		blocks: 'Blocked users',
-		no_conversations: 'No conversations yet',
-		language: 'Language',
-		theme: 'Theme',
-		light: 'Light',
-		dark: 'Dark',
-		online: 'Online',
-		offline: 'Offline',
-		connecting: 'Connecting…'
-	},
-	'zh-CN': {
-		app_name: 'ChatBox',
-		login: '登录',
-		register: '注册',
-		logout: '退出登录',
-		user_id: '用户 ID',
-		password: '密码',
-		display_name: '显示名称',
-		send: '发送',
-		message_placeholder: '输入消息…',
-		conversations: '会话',
-		contacts: '联系人',
-		search: '搜索',
-		search_placeholder: '搜索消息…',
-		blocks: '已拉黑用户',
-		no_conversations: '暂无会话',
-		language: '语言',
-		theme: '主题',
-		light: '浅色',
-		dark: '深色',
-		online: '在线',
-		offline: '离线',
-		connecting: '连接中…'
-	}
+const baseStrings: Record<string, string> = {
+	app_name: 'ChatBox',
+	tagline: 'Fast, real-time conversations on every device.',
+	login: 'Sign in',
+	register: 'Create account',
+	logout: 'Sign out',
+	user_id: 'User ID',
+	password: 'Password',
+	display_name: 'Display name',
+	send: 'Send',
+	message_placeholder: 'Write a message…',
+	conversations: 'Conversations',
+	chats: 'Chats',
+	contacts: 'Contacts',
+	requests: 'Requests',
+	search: 'Search',
+	search_placeholder: 'Search messages…',
+	blocks: 'Blocked users',
+	no_conversations: 'No conversations yet',
+	no_contacts: 'No contacts yet',
+	no_messages: 'No messages yet — say hello!',
+	select_conversation: 'Select a conversation to start chatting',
+	new_conversation: 'New conversation',
+	add_contact: 'Add a contact',
+	accept: 'Accept',
+	block: 'Block',
+	unblock: 'Unblock',
+	today: 'Today',
+	yesterday: 'Yesterday',
+	result: 'result',
+	results: 'results',
+	file: 'File',
+	back: 'Back',
+	close: 'Close',
+	dismiss: 'Dismiss',
+	language: 'Language',
+	theme: 'Theme',
+	light: 'Light',
+	dark: 'Dark',
+	system: 'System',
+	online: 'Online',
+	offline: 'Offline',
+	connecting: 'Connecting…',
+	no_account: 'No account?',
+	have_account: 'Already registered?',
+	plugins: 'Plugins',
+	install_plugin: 'Install plugin',
+	installed_plugins: 'Installed plugins',
+	no_plugins: 'No plugins installed yet',
+	remove: 'Remove',
+	plugin_install_hint:
+		'Choose a ChatBox client plugin file (.json). Plugins apply only to the current account.',
+	plugin_file_too_large: 'Plugin file is too large (max 256 KiB)',
+	plugin_installed: 'Plugin installed',
+	plugin_removed: 'Plugin removed',
+	plugin_error: 'Plugin installation failed',
+	kind_language_pack: 'Language pack',
+	kind_theme: 'Theme',
+	active: 'Active'
 };
 
-const STORAGE_KEY = 'chatbox.locale';
+export const locale = writable<string>('en');
 
-export const locale = writable<string>(
-	(typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY)) || 'en'
+export const languages = derived(installedPlugins, ($plugins: PluginPackage[]) => {
+	const options: LanguageOption[] = [{ code: 'en', label: 'English' }];
+	for (const pack of languagePacks($plugins)) {
+		if (pack.payload.locale === 'en') continue;
+		if (options.some((option) => option.code === pack.payload.locale)) continue;
+		options.push({ code: pack.payload.locale, label: pack.payload.label });
+	}
+	return options;
+});
+
+export const translator = derived(
+	[locale, installedPlugins],
+	([$locale, $plugins]): ((key: string) => string) => {
+		const pack = languagePacks($plugins).find((item) => item.payload.locale === $locale);
+		return (key: string): string => pack?.payload.strings[key] ?? baseStrings[key] ?? key;
+	}
 );
 
-locale.subscribe((value) => {
-	if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, value);
-});
-
-export const translator = derived(locale, (value) => {
-	const table = builtin[value] ?? builtin.en;
-	return (key: string): string => table[key] ?? builtin.en[key] ?? key;
-});
-
 /** Imperative helper for non-component modules. */
-export function t(key: string, value?: string): string {
-	const table = builtin[value ?? 'en'] ?? builtin.en;
-	return table[key] ?? builtin.en[key] ?? key;
+export function t(key: string): string {
+	const current = get(locale);
+	const pack = languagePacks(get(installedPlugins)).find(
+		(item) => item.payload.locale === current
+	);
+	return pack?.payload.strings[key] ?? baseStrings[key] ?? key;
+}
+
+/** Activate a language and persist it for the current user. */
+export function setLocale(userId: string | null, code: string): void {
+	locale.set(code);
+	if (userId) setActiveLocale(userId, code);
+}
+
+/** Restore the user's saved language, falling back to English. */
+export function syncLocale(userId: string): void {
+	const available = new Set(['en', ...languagePacks(get(installedPlugins)).map((p) => p.payload.locale)]);
+	const stored = getActiveLocale(userId);
+	const resolved = stored && available.has(stored) ? stored : 'en';
+	locale.set(resolved);
+	setActiveLocale(userId, resolved);
+}
+
+/** Reset the language after sign-out. */
+export function resetLocale(): void {
+	locale.set('en');
 }
