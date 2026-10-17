@@ -1,0 +1,67 @@
+# Local evaluation stack: MySQL, Redis, and one ChatBox node.
+#
+#   cd deploy/docker
+#   docker compose up --build
+#
+# The API is then available at http://127.0.0.1:8080.
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: chatbox
+      MYSQL_USER: chatbox
+      MYSQL_PASSWORD: chatbox
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Migrations run automatically on first boot.
+      - ../sql/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pchatbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      DATABASE_URL: mysql://chatbox:chatbox@mysql:3306/chatbox
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      JWT_SECRET: development-secret-change-me
+      HTTP_BIND: 0.0.0.0:8080
+      PUBLIC_BASE_URL: http://127.0.0.1:8080
+      NODE_ID: node-1
+      RUST_LOG: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - app-data:/app/data
+
+volumes:
+  mysql-data:
+  redis-data:
+  app-data:
