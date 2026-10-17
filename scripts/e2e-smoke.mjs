@@ -124,4 +124,55 @@ assert(search.results[0].content === 'hello from alice', 'search content matches
 console.log('search works');
 
 ws.close();
+
+// File transfer: pre-sign, upload, complete, send, download.
+const presign = await call('POST', '/files/presign', {
+	token: alice.tokens.access_token,
+	body: { filename: 'clip.mp4', content_type: 'video/mp4', size: 4 }
+});
+const uploadResponse = await fetch(presign.upload.upload_url, {
+	method: 'PUT',
+	headers: { authorization: `Bearer ${alice.tokens.access_token}` },
+	body: Buffer.from('data')
+});
+assert(uploadResponse.ok, 'upload succeeds');
+const complete = await call('POST', `/files/${presign.upload.attachment_id}/complete`, {
+	token: alice.tokens.access_token,
+	body: { filename: 'clip.mp4', content_type: 'video/mp4' }
+});
+assert(complete.attachment.size === 4, 'attachment size is recorded');
+assert(complete.attachment.sha256.length === 64, 'attachment hash is recorded');
+await call('POST', `/conversations/${conversationId}/messages`, {
+	token: alice.tokens.access_token,
+	body: { client_msg_id: 'e2e-file', kind: 'file', attachment_id: complete.attachment.id }
+});
+const download = await fetch(`${base}/api/v1/files/${complete.attachment.id}/content`, {
+	headers: { authorization: `Bearer ${alice.tokens.access_token}` }
+});
+assert(download.ok, 'attachment content is downloadable');
+assert((await download.text()) === 'data', 'attachment bytes round-trip');
+console.log('file transfer works');
+
+// Type search by filename wildcard.
+const fileSearch = await call('GET', '/search?filename=*.mp4&kind=file', {
+	token: alice.tokens.access_token
+});
+assert(fileSearch.results.length === 1, 'wildcard filename search finds the file');
+
+// Time-range search (minute precision).
+const now = new Date();
+const from = new Date(now.getTime() - 60_000).toISOString();
+const to = new Date(now.getTime() + 60_000).toISOString();
+const timeSearch = await call(
+	'GET',
+	`/search?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&sort=desc`,
+	{ token: alice.tokens.access_token }
+);
+assert(timeSearch.results.length >= 3, 'time-range search returns the conversation history');
+assert(
+	timeSearch.results[0].seq > timeSearch.results.at(-1).seq,
+	'descending sort returns newest first'
+);
+console.log('wildcard and time-range search work');
+
 console.log('E2E PASS');
