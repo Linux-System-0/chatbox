@@ -1,6 +1,8 @@
 //! Contacts and friend requests.
 
-use super::{AuthContext, Services};
+use std::collections::HashSet;
+
+use super::{AuthContext, Services, normalize_avatar, normalize_optional_text};
 use crate::error::{Error, Result};
 use crate::model::{Contact, FriendRequest, FriendRequestStatus, User};
 
@@ -11,8 +13,25 @@ pub struct ContactView {
     pub user: User,
     /// The per-contact remark.
     pub remark: Option<String>,
+    /// The per-contact avatar chosen by the contact-list owner.
+    pub remark_avatar_url: Option<String>,
     /// When the contact was added.
     pub created_at: crate::model::Timestamp,
+}
+
+/// A friend request with both participants' profiles.
+///
+/// The request fields stay flat in JSON so existing clients keep working; the
+/// extra profiles let new clients render names instead of internal numeric ids.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FriendRequestView {
+    /// The underlying request.
+    #[serde(flatten)]
+    pub request: FriendRequest,
+    /// Requesting user's profile, when available.
+    pub from_user: Option<User>,
+    /// Target user's profile, when available.
+    pub to_user: Option<User>,
 }
 
 impl Services {
@@ -61,9 +80,22 @@ impl Services {
         Ok(request)
     }
 
-    /// List requests sent to or by the caller.
-    pub async fn list_friend_requests(&self, ctx: &AuthContext) -> Result<Vec<FriendRequest>> {
-        self.stores.friend_requests.list_for_user(ctx.user_id).await
+    /// List requests sent to or by the caller, with participant profiles.
+    pub async fn list_friend_requests(&self, ctx: &AuthContext) -> Result<Vec<FriendRequestView>> {
+        let requests = self
+            .stores
+            .friend_requests
+            .list_for_user(ctx.user_id)
+            .await?;
+        let mut views = Vec::with_capacity(requests.len());
+        for request in requests {
+            views.push(FriendRequestView {
+                from_user: self.stores.users.get(request.from_id).await?,
+                to_user: self.stores.users.get(request.to_id).await?,
+                request,
+            });
+        }
+        Ok(views)
     }
 
     /// Accept a pending request addressed to the caller.
@@ -89,6 +121,7 @@ impl Services {
                 owner_id: request.from_id,
                 contact_id: request.to_id,
                 remark: None,
+                remark_avatar_url: None,
                 created_at: now,
             })
             .await?;
@@ -98,6 +131,7 @@ impl Services {
                 owner_id: request.to_id,
                 contact_id: request.from_id,
                 remark: None,
+                remark_avatar_url: None,
                 created_at: now,
             })
             .await?;
@@ -131,15 +165,36 @@ impl Services {
             .ok_or(Error::NotFound)
     }
 
+    /// Whether two users are accepted contacts of each other.
+    pub async fn are_contacts(&self, a: i64, b: i64) -> Result<bool> {
+        Ok(self.stores.contacts.get(a, b).await?.is_some()
+            && self.stores.contacts.get(b, a).await?.is_some())
+    }
+
     /// List the caller's contacts with profiles.
+    ///
+    /// Contacts the caller has blocked are excluded; they are only visible in
+    /// the block list until they are unblocked.
     pub async fn list_contacts(&self, ctx: &AuthContext) -> Result<Vec<ContactView>> {
         let contacts = self.stores.contacts.list(ctx.user_id).await?;
+        let blocked: HashSet<i64> = self
+            .stores
+            .blocks
+            .list(ctx.user_id)
+            .await?
+            .into_iter()
+            .map(|block| block.blocked_id)
+            .collect();
         let mut views = Vec::with_capacity(contacts.len());
         for contact in contacts {
+            if blocked.contains(&contact.contact_id) {
+                continue;
+            }
             if let Some(user) = self.stores.users.get(contact.contact_id).await? {
                 views.push(ContactView {
                     user,
                     remark: contact.remark,
+                    remark_avatar_url: contact.remark_avatar_url,
                     created_at: contact.created_at,
                 });
             }
@@ -147,31 +202,45 @@ impl Services {
         Ok(views)
     }
 
-    /// Set a per-contact remark.
+    /// Set a per-contact remark and/or avatar.
+    ///
+    /// `None` leaves a field unchanged; `Some(None)` or an empty string clears
+    /// it.
     pub async fn set_contact_remark(
         &self,
         ctx: &AuthContext,
         contact_user_id: &str,
-        remark: Option<String>,
-    ) -> Result<()> {
+        remark: Option<Option<String>>,
+        remark_avatar_url: Option<Option<String>>,
+    ) -> Result<ContactView> {
         let target = self.get_user_by_user_id(contact_user_id).await?;
-        if self
+        let mut contact = self
             .stores
             .contacts
             .get(ctx.user_id, target.id)
             .await?
-            .is_none()
-        {
-            return Err(Error::NotFound);
+            .ok_or(Error::NotFound)?;
+        if let Some(value) = remark {
+            contact.remark = normalize_optional_text(value, 64)?;
         }
-        let clean = remark
-            .map(|r| r.trim().to_string())
-            .filter(|r| !r.is_empty());
+        if let Some(value) = remark_avatar_url {
+            contact.remark_avatar_url = normalize_avatar(value)?;
+        }
         self.stores
             .contacts
-            .set_remark(ctx.user_id, target.id, clean)
+            .set_remark(
+                ctx.user_id,
+                target.id,
+                contact.remark.clone(),
+                contact.remark_avatar_url.clone(),
+            )
             .await?;
-        Ok(())
+        Ok(ContactView {
+            user: target,
+            remark: contact.remark,
+            remark_avatar_url: contact.remark_avatar_url,
+            created_at: contact.created_at,
+        })
     }
 
     /// Remove a contact in both directions.

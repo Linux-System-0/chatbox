@@ -162,6 +162,7 @@ async fn mysql_roundtrip_sequence_and_fanout() {
         id: ids.next_id(),
         user_id: user_id.clone(),
         display_name: None,
+        avatar_url: None,
         password_hash: "not-a-real-hash".into(),
         created_at: now,
         updated_at: now,

@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
             get(handlers::me).patch(handlers::update_me),
         )
         .route("/api/v1/users/{user_id}", get(handlers::get_user))
+        .route("/api/v1/presence", get(handlers::presence))
         .route("/api/v1/devices", get(handlers::list_devices))
         .route("/api/v1/devices/{id}", delete(handlers::delete_device))
         .route("/api/v1/contacts", get(handlers::list_contacts))

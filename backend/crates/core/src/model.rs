@@ -86,6 +86,8 @@ pub struct User {
     pub user_id: UserId,
     /// Optional display name; falls back to `user_id`.
     pub display_name: Option<String>,
+    /// Optional avatar URL (absolute URL or `data:image/...` URL).
+    pub avatar_url: Option<String>,
     /// Argon2id password hash. Never serialized to clients.
     #[serde(skip_serializing)]
     pub password_hash: String,
@@ -231,6 +233,8 @@ pub struct Contact {
     pub contact_id: i64,
     /// Optional nickname.
     pub remark: Option<String>,
+    /// Optional avatar chosen by the contact-list owner.
+    pub remark_avatar_url: Option<String>,
     /// Creation time.
     pub created_at: Timestamp,
 }

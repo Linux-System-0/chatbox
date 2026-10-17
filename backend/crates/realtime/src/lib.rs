@@ -152,32 +152,7 @@ impl Gateway {
             online,
             devices,
         };
-        let conversations = match self
-            .services
-            .stores
-            .conversations
-            .list_for_user(user_id)
-            .await
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let mut peers = Vec::new();
-        for membership in conversations {
-            if let Ok(members) = self
-                .services
-                .stores
-                .conversations
-                .list_members(membership.conversation_id)
-                .await
-            {
-                for member in members {
-                    if member.user_id != user_id && !peers.contains(&member.user_id) {
-                        peers.push(member.user_id);
-                    }
-                }
-            }
-        }
+        let peers = self.presence_peers(user_id).await;
         if let Ok(conns) = self.services.infra.registry.connections_for(&peers).await {
             for (peer, connections) in conns {
                 for conn in connections {
@@ -198,6 +173,43 @@ impl Gateway {
                 }
             }
         }
+    }
+
+    /// Users interested in this user's presence: accepted contacts plus
+    /// everyone sharing a conversation.
+    async fn presence_peers(&self, user_id: i64) -> Vec<i64> {
+        let mut peers = Vec::new();
+        if let Ok(contacts) = self.services.stores.contacts.list(user_id).await {
+            for contact in contacts {
+                if contact.contact_id != user_id && !peers.contains(&contact.contact_id) {
+                    peers.push(contact.contact_id);
+                }
+            }
+        }
+        if let Ok(conversations) = self
+            .services
+            .stores
+            .conversations
+            .list_for_user(user_id)
+            .await
+        {
+            for membership in conversations {
+                if let Ok(members) = self
+                    .services
+                    .stores
+                    .conversations
+                    .list_members(membership.conversation_id)
+                    .await
+                {
+                    for member in members {
+                        if member.user_id != user_id && !peers.contains(&member.user_id) {
+                            peers.push(member.user_id);
+                        }
+                    }
+                }
+            }
+        }
+        peers
     }
 }
 
@@ -245,7 +257,14 @@ async fn handle_socket(socket: WebSocket, gateway: Gateway) {
             },
         )
         .await;
-    let devices = gateway.hub.user_connection_count(ctx.user_id).await;
+    let devices = gateway
+        .services
+        .infra
+        .registry
+        .connections(ctx.user_id)
+        .await
+        .map(|conns| conns.len())
+        .unwrap_or(1);
     let _ = gateway
         .services
         .infra
@@ -295,6 +314,13 @@ async fn handle_socket(socket: WebSocket, gateway: Gateway) {
                     .registry
                     .heartbeat(ctx.user_id, &conn_id, gateway.services.now())
                     .await;
+                // Refreshes the Redis presence TTL while the socket is alive.
+                let _ = gateway
+                    .services
+                    .infra
+                    .presence
+                    .set_online(ctx.user_id, true)
+                    .await;
             }
         }
     }
@@ -308,7 +334,14 @@ async fn handle_socket(socket: WebSocket, gateway: Gateway) {
         .unregister(ctx.user_id, &conn_id)
         .await;
     writer.abort();
-    let remaining = gateway.hub.user_connection_count(ctx.user_id).await;
+    let remaining = gateway
+        .services
+        .infra
+        .registry
+        .connections(ctx.user_id)
+        .await
+        .map(|conns| conns.len())
+        .unwrap_or(0);
     if remaining == 0 {
         let _ = gateway
             .services
@@ -317,6 +350,17 @@ async fn handle_socket(socket: WebSocket, gateway: Gateway) {
             .set_online(ctx.user_id, false)
             .await;
         gateway.broadcast_presence(ctx.user_id, false, 0).await;
+    } else {
+        // Another device (possibly on another node) is still connected.
+        let _ = gateway
+            .services
+            .infra
+            .presence
+            .set_online(ctx.user_id, true)
+            .await;
+        gateway
+            .broadcast_presence(ctx.user_id, true, remaining)
+            .await;
     }
 }
 

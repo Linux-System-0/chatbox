@@ -1,6 +1,8 @@
 //! User profile and device management.
 
-use super::{AuthContext, Services};
+use std::collections::HashSet;
+
+use super::{AuthContext, Services, normalize_avatar, normalize_optional_text};
 use crate::error::{Error, Result};
 use crate::model::{Device, User};
 
@@ -19,24 +21,37 @@ impl Services {
             .ok_or(Error::NotFound)
     }
 
-    /// Update the caller's display name.
+    /// Update the caller's custom id, display name, and/or avatar.
+    ///
+    /// `None` leaves a field unchanged; `Some(None)` (or an empty string) clears
+    /// it. `user_id` cannot be cleared.
     pub async fn update_profile(
         &self,
         ctx: &AuthContext,
-        display_name: Option<String>,
+        user_id: Option<String>,
+        display_name: Option<Option<String>>,
+        avatar_url: Option<Option<String>>,
     ) -> Result<User> {
         let mut user = self.get_user(ctx.user_id).await?;
-        if let Some(name) = display_name {
-            let trimmed = name.trim();
-            if trimmed.chars().count() > 64 {
-                return Err(Error::Invalid("display name is too long".into()));
+
+        if let Some(next_id) = user_id {
+            let next_id = next_id.trim();
+            self.validate_user_id(next_id)?;
+            if next_id != user.user_id {
+                if self.stores.users.exists_user_id(next_id).await? {
+                    return Err(Error::Conflict("user id is already taken".into()));
+                }
+                user.user_id = next_id.to_string();
             }
-            user.display_name = if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            };
         }
+
+        if let Some(name) = display_name {
+            user.display_name = normalize_optional_text(name, 64)?;
+        }
+        if let Some(avatar) = avatar_url {
+            user.avatar_url = normalize_avatar(avatar)?;
+        }
+
         user.updated_at = self.now();
         self.stores.users.update(&user).await?;
         Ok(user)
@@ -66,5 +81,15 @@ impl Services {
     /// The effective display name of a user, falling back to the custom id.
     pub fn display_name_of(user: &User) -> String {
         user.effective_display_name().to_string()
+    }
+
+    /// Current online state for the given internal user ids.
+    pub async fn presence_for(&self, user_ids: &[i64]) -> Result<Vec<(i64, bool)>> {
+        let online = self.infra.presence.online_users(user_ids).await?;
+        let online: HashSet<i64> = online.into_iter().collect();
+        Ok(user_ids
+            .iter()
+            .map(|user_id| (*user_id, online.contains(user_id)))
+            .collect())
     }
 }

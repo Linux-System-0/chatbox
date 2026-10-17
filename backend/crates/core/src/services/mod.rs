@@ -135,3 +135,50 @@ pub(crate) fn normalize_text(input: &str, max: usize) -> Result<String> {
     }
     Ok(trimmed.to_string())
 }
+
+/// Normalize an optional user-provided text field. Empty input clears it.
+pub(crate) fn normalize_optional_text(input: Option<String>, max: usize) -> Result<Option<String>> {
+    let Some(raw) = input else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > max {
+        return Err(crate::error::Error::Invalid(format!(
+            "value exceeds {max} characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Normalize an avatar reference. Empty input clears it.
+///
+/// Avatars are either absolute http(s) URLs or inline `data:image/...` URLs.
+/// The latter are produced by the web client after downscaling the upload.
+pub(crate) fn normalize_avatar(input: Option<String>) -> Result<Option<String>> {
+    const MAX_AVATAR_CHARS: usize = 700_000;
+    let Some(raw) = input else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_AVATAR_CHARS {
+        return Err(crate::error::Error::Invalid(
+            "avatar is too large (max 512 KiB)".into(),
+        ));
+    }
+    let allowed = trimmed.starts_with("https://")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("data:image/")
+        || trimmed.starts_with('/');
+    if !allowed {
+        return Err(crate::error::Error::Invalid(
+            "avatar must be an http(s), data:image, or absolute-path URL".into(),
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}

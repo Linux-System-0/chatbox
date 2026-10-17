@@ -103,6 +103,7 @@ impl Services {
             id: self.new_id(),
             user_id: input.user_id.clone(),
             display_name: input.display_name.filter(|s| !s.trim().is_empty()),
+            avatar_url: None,
             password_hash: hash_password(&input.password)?,
             created_at: now,
             updated_at: now,

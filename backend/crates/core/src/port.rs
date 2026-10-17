@@ -133,12 +133,13 @@ pub trait ContactRepo: Send + Sync {
     async fn get(&self, owner_id: i64, contact_id: i64) -> Result<Option<Contact>>;
     /// List contacts for an owner.
     async fn list(&self, owner_id: i64) -> Result<Vec<Contact>>;
-    /// Set a remark.
+    /// Set the private remark fields.
     async fn set_remark(
         &self,
         owner_id: i64,
         contact_id: i64,
         remark: Option<String>,
+        remark_avatar_url: Option<String>,
     ) -> Result<()>;
     /// Delete a contact link.
     async fn delete(&self, owner_id: i64, contact_id: i64) -> Result<()>;

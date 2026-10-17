@@ -122,8 +122,17 @@ async fn rewrites_before_persisting_over_http() {
     plugins.enable("test-redactor").await.unwrap();
 
     let alice = register(&services, "alice").await;
-    register(&services, "bob").await;
+    let bob = register(&services, "bob").await;
     let ctx = services.authenticate(&alice.access_token).await.unwrap();
+    let bob_ctx = services.authenticate(&bob.access_token).await.unwrap();
+    let request = services
+        .send_friend_request(&ctx, "bob", None)
+        .await
+        .unwrap();
+    services
+        .accept_friend_request(&bob_ctx, request.id)
+        .await
+        .unwrap();
     let conversation = services.get_or_create_direct(&ctx, "bob").await.unwrap();
 
     let state = AppState {

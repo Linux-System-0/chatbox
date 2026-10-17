@@ -253,6 +253,7 @@ fn user_from_row(row: &MySqlRow) -> Result<User> {
         id: row.try_get("id").map_err(Error::storage)?,
         user_id: row.try_get("user_id").map_err(Error::storage)?,
         display_name: row.try_get("display_name").map_err(Error::storage)?,
+        avatar_url: row.try_get("avatar_url").map_err(Error::storage)?,
         password_hash: row.try_get("password_hash").map_err(Error::storage)?,
         created_at: ts(row, "created_at")?,
         updated_at: ts(row, "updated_at")?,
@@ -329,6 +330,7 @@ fn contact_from_row(row: &MySqlRow) -> Result<Contact> {
         owner_id: row.try_get("owner_id").map_err(Error::storage)?,
         contact_id: row.try_get("contact_id").map_err(Error::storage)?,
         remark: row.try_get("remark").map_err(Error::storage)?,
+        remark_avatar_url: row.try_get("remark_avatar_url").map_err(Error::storage)?,
         created_at: ts(row, "created_at")?,
     })
 }
@@ -397,12 +399,13 @@ fn outbox_from_row(row: &MySqlRow) -> Result<OutboxEvent> {
 impl UserRepo for MySqlShard {
     async fn create(&self, user: &User) -> Result<()> {
         sqlx::query(
-            "INSERT INTO users (id, user_id, display_name, password_hash, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, user_id, display_name, avatar_url, password_hash, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(user.id)
         .bind(&user.user_id)
         .bind(&user.display_name)
+        .bind(&user.avatar_url)
         .bind(&user.password_hash)
         .bind(naive(user.created_at))
         .bind(naive(user.updated_at))
@@ -432,9 +435,11 @@ impl UserRepo for MySqlShard {
 
     async fn update(&self, user: &User) -> Result<()> {
         sqlx::query(
-            "UPDATE users SET display_name = ?, password_hash = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET user_id = ?, display_name = ?, avatar_url = ?, password_hash = ?, updated_at = ? WHERE id = ?",
         )
+        .bind(&user.user_id)
         .bind(&user.display_name)
+        .bind(&user.avatar_url)
         .bind(&user.password_hash)
         .bind(naive(user.updated_at))
         .bind(user.id)
@@ -951,13 +956,15 @@ impl MySqlShard {
 impl ContactRepo for MySqlShard {
     async fn upsert(&self, contact: &Contact) -> Result<()> {
         sqlx::query(
-            "INSERT INTO contacts (owner_id, contact_id, remark, created_at)
-             VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE remark = VALUES(remark)",
+            "INSERT INTO contacts (owner_id, contact_id, remark, remark_avatar_url, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE remark = VALUES(remark),
+                remark_avatar_url = VALUES(remark_avatar_url)",
         )
         .bind(contact.owner_id)
         .bind(contact.contact_id)
         .bind(&contact.remark)
+        .bind(&contact.remark_avatar_url)
         .bind(naive(contact.created_at))
         .execute(&self.pool)
         .await
@@ -990,14 +997,19 @@ impl ContactRepo for MySqlShard {
         owner_id: i64,
         contact_id: i64,
         remark: Option<String>,
+        remark_avatar_url: Option<String>,
     ) -> Result<()> {
-        sqlx::query("UPDATE contacts SET remark = ? WHERE owner_id = ? AND contact_id = ?")
-            .bind(remark)
-            .bind(owner_id)
-            .bind(contact_id)
-            .execute(&self.pool)
-            .await
-            .map_err(Error::storage)?;
+        sqlx::query(
+            "UPDATE contacts SET remark = ?, remark_avatar_url = ?
+             WHERE owner_id = ? AND contact_id = ?",
+        )
+        .bind(remark)
+        .bind(remark_avatar_url)
+        .bind(owner_id)
+        .bind(contact_id)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::storage)?;
         Ok(())
     }
 
@@ -1825,8 +1837,16 @@ impl ContactRepo for MySqlStore {
         owner_id: i64,
         contact_id: i64,
         remark: Option<String>,
+        remark_avatar_url: Option<String>,
     ) -> Result<()> {
-        ContactRepo::set_remark(self.shard_for(owner_id), owner_id, contact_id, remark).await
+        ContactRepo::set_remark(
+            self.shard_for(owner_id),
+            owner_id,
+            contact_id,
+            remark,
+            remark_avatar_url,
+        )
+        .await
     }
 
     async fn delete(&self, owner_id: i64, contact_id: i64) -> Result<()> {

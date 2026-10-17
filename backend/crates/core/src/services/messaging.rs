@@ -30,14 +30,30 @@ pub struct ConversationView {
     pub id: i64,
     /// Direct or group.
     pub kind: ConversationKind,
-    /// Human title (group name or the other user's display name).
+    /// Human title (group name or the contact-aware direct title).
     pub title: String,
+    /// Resolved avatar for a direct conversation.
+    pub avatar_url: Option<String>,
+    /// The other participant in a direct conversation.
+    pub peer_id: Option<i64>,
+    /// Backing group id for a group conversation.
+    pub group_id: Option<i64>,
+    /// Number of conversation members.
+    pub member_count: u32,
     /// The newest message, if any.
     pub last_message: Option<Message>,
     /// The caller's read cursor.
     pub last_read_seq: u64,
     /// Number of unread messages.
     pub unread: u64,
+}
+
+struct ConversationIdentity {
+    title: String,
+    avatar_url: Option<String>,
+    peer_id: Option<i64>,
+    group_id: Option<i64>,
+    member_count: u32,
 }
 
 impl Services {
@@ -52,6 +68,11 @@ impl Services {
         if other.id == ctx.user_id {
             return Err(Error::Invalid(
                 "cannot start a direct chat with yourself".into(),
+            ));
+        }
+        if !self.are_contacts(ctx.user_id, other.id).await? {
+            return Err(Error::Forbidden(
+                "add this user as a contact before starting a chat".into(),
             ));
         }
         if let Some(existing) = self
@@ -117,10 +138,15 @@ impl Services {
                 .conversations
                 .list_members(req.conversation_id)
                 .await?;
-            if let Some(other) = members.iter().find(|m| m.user_id != ctx.user_id)
-                && self.is_blocked_between(ctx.user_id, other.user_id).await?
-            {
-                return Err(Error::Forbidden("direct messaging is blocked".into()));
+            if let Some(other) = members.iter().find(|m| m.user_id != ctx.user_id) {
+                if !self.are_contacts(ctx.user_id, other.user_id).await? {
+                    return Err(Error::Forbidden(
+                        "direct messaging requires an accepted contact".into(),
+                    ));
+                }
+                if self.is_blocked_between(ctx.user_id, other.user_id).await? {
+                    return Err(Error::Forbidden("direct messaging is blocked".into()));
+                }
             }
         }
 
@@ -286,7 +312,9 @@ impl Services {
                 Some(c) => c,
                 None => continue,
             };
-            let title = self.conversation_title(&conversation, ctx.user_id).await?;
+            let title = self
+                .conversation_identity(&conversation, ctx.user_id)
+                .await?;
             let last = self
                 .stores
                 .messages
@@ -302,7 +330,11 @@ impl Services {
             views.push(ConversationView {
                 id: conversation.id,
                 kind: conversation.kind,
-                title,
+                title: title.title,
+                avatar_url: title.avatar_url,
+                peer_id: title.peer_id,
+                group_id: title.group_id,
+                member_count: title.member_count,
                 last_message: last,
                 last_read_seq: membership.last_read_seq,
                 unread,
@@ -316,29 +348,66 @@ impl Services {
         Ok(views)
     }
 
-    async fn conversation_title(&self, conversation: &Conversation, viewer: i64) -> Result<String> {
+    async fn conversation_identity(
+        &self,
+        conversation: &Conversation,
+        viewer: i64,
+    ) -> Result<ConversationIdentity> {
+        let members = self
+            .stores
+            .conversations
+            .list_members(conversation.id)
+            .await?;
+        let member_count = members.len() as u32;
         match conversation.kind {
-            ConversationKind::Group => Ok(self
-                .stores
-                .groups
-                .get_by_conversation(conversation.id)
-                .await?
-                .map(|g| g.name)
-                .unwrap_or_else(|| "Group".to_string())),
-            ConversationKind::Direct => {
-                let members = self
+            ConversationKind::Group => {
+                let group = self
                     .stores
-                    .conversations
-                    .list_members(conversation.id)
+                    .groups
+                    .get_by_conversation(conversation.id)
                     .await?;
-                for m in members {
-                    if m.user_id != viewer
-                        && let Some(user) = self.stores.users.get(m.user_id).await?
-                    {
-                        return Ok(user.effective_display_name().to_string());
+                Ok(ConversationIdentity {
+                    title: group
+                        .as_ref()
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Group".to_string()),
+                    avatar_url: None,
+                    peer_id: None,
+                    group_id: group.as_ref().map(|g| g.id),
+                    member_count,
+                })
+            }
+            ConversationKind::Direct => {
+                for member in members {
+                    if member.user_id == viewer {
+                        continue;
+                    }
+                    if let Some(user) = self.stores.users.get(member.user_id).await? {
+                        let contact = self.stores.contacts.get(viewer, user.id).await?;
+                        let title = contact
+                            .as_ref()
+                            .and_then(|c| c.remark.clone())
+                            .filter(|r| !r.trim().is_empty())
+                            .unwrap_or_else(|| user.effective_display_name().to_string());
+                        let avatar_url = contact
+                            .and_then(|c| c.remark_avatar_url)
+                            .or_else(|| user.avatar_url.clone());
+                        return Ok(ConversationIdentity {
+                            title,
+                            avatar_url,
+                            peer_id: Some(user.id),
+                            group_id: None,
+                            member_count,
+                        });
                     }
                 }
-                Ok("Direct".to_string())
+                Ok(ConversationIdentity {
+                    title: "Direct".to_string(),
+                    avatar_url: None,
+                    peer_id: None,
+                    group_id: None,
+                    member_count,
+                })
             }
         }
     }

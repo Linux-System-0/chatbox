@@ -102,6 +102,17 @@ async fn send(
         .expect("send")
 }
 
+async fn befriend(services: &Services, from: &AuthContext, to_name: &str, to: &AuthContext) {
+    let request = services
+        .send_friend_request(from, to_name, None)
+        .await
+        .expect("friend request");
+    services
+        .accept_friend_request(to, request.id)
+        .await
+        .expect("accept friend request");
+}
+
 #[tokio::test]
 async fn registration_login_and_duplicate_id() {
     let h = harness();
@@ -150,6 +161,7 @@ async fn direct_messaging_is_idempotent_and_searchable() {
     let h = harness();
     let (alice_id, _, alice) = register(&h.services, "alice").await;
     let (bob_id, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
 
     let conv = h
         .services
@@ -220,6 +232,7 @@ async fn block_prevents_direct_messages() {
     let h = harness();
     let (_, _, alice) = register(&h.services, "alice").await;
     let (_, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
     let conv = h
         .services
         .get_or_create_direct(&alice, "bob")
@@ -293,14 +306,100 @@ async fn friend_request_flow_creates_contact() {
     assert_eq!(contacts[0].user.user_id, "bob");
 
     h.services
-        .set_contact_remark(&alice, "bob", Some("Bobby".into()))
+        .set_contact_remark(&alice, "bob", Some(Some("Bobby".into())), None)
         .await
         .unwrap();
     let contacts = h.services.list_contacts(&alice).await.unwrap();
     assert_eq!(contacts[0].remark.as_deref(), Some("Bobby"));
 
+    h.services
+        .set_contact_remark(
+            &alice,
+            "bob",
+            None,
+            Some(Some("data:image/png;base64,AAAA".into())),
+        )
+        .await
+        .unwrap();
+    let contacts = h.services.list_contacts(&alice).await.unwrap();
+    assert_eq!(
+        contacts[0].remark_avatar_url.as_deref(),
+        Some("data:image/png;base64,AAAA")
+    );
+
+    // Blocking hides the contact from the contact list but keeps the block.
+    h.services.block_user(&alice, "bob").await.unwrap();
+    assert!(h.services.list_contacts(&alice).await.unwrap().is_empty());
+    assert_eq!(
+        h.services.list_blocked_users(&alice).await.unwrap().len(),
+        1
+    );
+    h.services.unblock_user(&alice, "bob").await.unwrap();
+    assert_eq!(h.services.list_contacts(&alice).await.unwrap().len(), 1);
+
     h.services.remove_contact(&alice, "bob").await.unwrap();
     assert!(h.services.list_contacts(&alice).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_chat_requires_an_accepted_contact() {
+    let h = harness();
+    let (_, _, alice) = register(&h.services, "alice").await;
+    let (_, _, bob) = register(&h.services, "bob").await;
+
+    let err = h
+        .services
+        .get_or_create_direct(&alice, "bob")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, chatbox_core::Error::Forbidden(_)));
+
+    befriend(&h.services, &alice, "bob", &bob).await;
+    assert!(h.services.get_or_create_direct(&alice, "bob").await.is_ok());
+}
+
+#[tokio::test]
+async fn profile_can_change_id_display_name_and_avatar() {
+    let h = harness();
+    let (_, _, alice) = register(&h.services, "alice").await;
+    let (_, _, bob) = register(&h.services, "bob").await;
+
+    let updated = h
+        .services
+        .update_profile(
+            &alice,
+            Some("alice-new".into()),
+            Some(Some("Alice A.".into())),
+            Some(Some("data:image/png;base64,AAAA".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.user_id, "alice-new");
+    assert_eq!(updated.display_name.as_deref(), Some("Alice A."));
+    assert_eq!(
+        updated.avatar_url.as_deref(),
+        Some("data:image/png;base64,AAAA")
+    );
+    assert!(h.services.get_user_by_user_id("alice").await.is_err());
+    assert!(h.services.get_user_by_user_id("alice-new").await.is_ok());
+
+    // Taking another user's id is rejected.
+    let err = h
+        .services
+        .update_profile(&alice, Some("bob".into()), None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, chatbox_core::Error::Conflict(_)));
+
+    // Empty values clear the optional profile fields.
+    let cleared = h
+        .services
+        .update_profile(&alice, None, Some(Some("".into())), Some(Some("".into())))
+        .await
+        .unwrap();
+    assert!(cleared.display_name.is_none());
+    assert!(cleared.avatar_url.is_none());
+    let _ = bob;
 }
 
 #[tokio::test]
@@ -397,6 +496,7 @@ async fn offline_messages_are_delivered_on_resume() {
     let h = harness();
     let (_, _, alice) = register(&h.services, "alice").await;
     let (_, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
     let conv = h
         .services
         .get_or_create_direct(&alice, "bob")
@@ -429,7 +529,8 @@ async fn offline_messages_are_delivered_on_resume() {
 async fn fanout_routes_to_registered_connections() {
     let h = harness();
     let (_, _, alice) = register(&h.services, "alice").await;
-    let (bob_id, _, _) = register(&h.services, "bob").await;
+    let (bob_id, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
     let conv = h
         .services
         .get_or_create_direct(&alice, "bob")

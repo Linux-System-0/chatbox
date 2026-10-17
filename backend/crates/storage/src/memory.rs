@@ -116,6 +116,20 @@ impl UserRepo for MemoryStore {
 
     async fn update(&self, user: &User) -> Result<()> {
         let mut st = self.lock();
+        let previous = st
+            .users
+            .get(&user.id)
+            .map(|current| current.user_id.clone());
+        if let Some(existing) = st.user_ids.get(&user.user_id)
+            && *existing != user.id
+        {
+            return Err(Error::Conflict("user id is already taken".into()));
+        }
+        if let Some(previous) = previous
+            && previous != user.user_id
+        {
+            st.user_ids.remove(&previous);
+        }
         st.user_ids.insert(user.user_id.clone(), user.id);
         st.users.insert(user.id, user.clone());
         Ok(())
@@ -494,10 +508,12 @@ impl ContactRepo for MemoryStore {
         owner_id: i64,
         contact_id: i64,
         remark: Option<String>,
+        remark_avatar_url: Option<String>,
     ) -> Result<()> {
         let mut st = self.lock();
         if let Some(contact) = st.contacts.get_mut(&(owner_id, contact_id)) {
             contact.remark = remark;
+            contact.remark_avatar_url = remark_avatar_url;
         }
         Ok(())
     }
@@ -966,6 +982,7 @@ mod tests {
             id: 1,
             user_id: "alice".into(),
             display_name: None,
+            avatar_url: None,
             password_hash: "x".into(),
             created_at: now,
             updated_at: now,

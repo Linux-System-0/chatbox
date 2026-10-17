@@ -191,10 +191,14 @@ pub async fn me(
     Ok(Json(serde_json::json!({ "user": user })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct UpdateMeBody {
     #[serde(default)]
-    display_name: Option<String>,
+    user_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    display_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    avatar_url: Option<Option<String>>,
 }
 
 /// `PATCH /users/me`
@@ -205,7 +209,7 @@ pub async fn update_me(
 ) -> ApiResult<Json<serde_json::Value>> {
     let user = state
         .services
-        .update_profile(&ctx, body.display_name)
+        .update_profile(&ctx, body.user_id, body.display_name, body.avatar_url)
         .await?;
     Ok(Json(serde_json::json!({ "user": user })))
 }
@@ -254,8 +258,10 @@ pub async fn list_contacts(
 
 #[derive(Deserialize)]
 pub struct RemarkBody {
-    #[serde(default)]
-    remark: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    remark: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    remark_avatar_url: Option<Option<String>>,
 }
 
 /// `PATCH /contacts/{user_id}`
@@ -264,12 +270,12 @@ pub async fn set_remark(
     AuthUser(ctx): AuthUser,
     Path(user_id): Path<String>,
     Json(body): Json<RemarkBody>,
-) -> ApiResult<StatusCode> {
-    state
+) -> ApiResult<Json<serde_json::Value>> {
+    let contact = state
         .services
-        .set_contact_remark(&ctx, &user_id, body.remark)
+        .set_contact_remark(&ctx, &user_id, body.remark, body.remark_avatar_url)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "contact": contact })))
 }
 
 /// `DELETE /contacts/{user_id}`
@@ -329,6 +335,43 @@ pub async fn reject_request(
 ) -> ApiResult<Json<serde_json::Value>> {
     let request = state.services.reject_friend_request(&ctx, id).await?;
     Ok(Json(serde_json::json!({ "request": request })))
+}
+
+/// `GET /presence?user_ids=1,2,3`
+#[derive(Deserialize)]
+pub struct PresenceQuery {
+    #[serde(default)]
+    user_ids: Option<String>,
+}
+
+/// `GET /presence`
+pub async fn presence(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Query(query): Query<PresenceQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let mut users = Vec::new();
+    for raw in query.user_ids.as_deref().unwrap_or_default().split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let user_id = raw
+            .parse::<i64>()
+            .map_err(|_| Error::Invalid("invalid user id".into()))?;
+        if !users.contains(&user_id) {
+            users.push(user_id);
+        }
+        if users.len() >= 200 {
+            break;
+        }
+    }
+    let presence = state.services.presence_for(&users).await?;
+    let entries: Vec<serde_json::Value> = presence
+        .into_iter()
+        .map(|(user_id, online)| serde_json::json!({ "user_id": user_id, "online": online }))
+        .collect();
+    Ok(Json(serde_json::json!({ "presence": entries })))
 }
 
 // ---------------------------------------------------------------------------
@@ -869,3 +912,35 @@ async fn user_handle(state: &AppState, ctx: &AuthContext) -> ApiResult<String> {
 // Keep `Serialize` referenced for response types defined by callers.
 #[allow(dead_code)]
 fn _assert_serialize<T: Serialize>() {}
+
+/// Distinguish an omitted field (`None`) from an explicit `null` (`Some(None)`).
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_body_distinguishes_null_from_missing() {
+        let missing: UpdateMeBody = serde_json::from_str("{}").unwrap();
+        assert!(missing.display_name.is_none());
+        assert!(missing.avatar_url.is_none());
+
+        let cleared: UpdateMeBody =
+            serde_json::from_str(r#"{"display_name":null,"avatar_url":null}"#).unwrap();
+        assert_eq!(cleared.display_name, Some(None));
+        assert_eq!(cleared.avatar_url, Some(None));
+
+        let set: UpdateMeBody =
+            serde_json::from_str(r#"{"display_name":"Ada","avatar_url":"https://x/y.png"}"#)
+                .unwrap();
+        assert_eq!(set.display_name, Some(Some("Ada".into())));
+        assert_eq!(set.avatar_url, Some(Some("https://x/y.png".into())));
+    }
+}

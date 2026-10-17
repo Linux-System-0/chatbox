@@ -136,6 +136,7 @@ async fn reads_users_and_conversations() {
             id: 42,
             user_id: "alice".into(),
             display_name: Some("Alice".into()),
+            avatar_url: None,
             password_hash: "hash".into(),
             created_at: now,
             updated_at: now,
