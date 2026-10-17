@@ -14,6 +14,7 @@ behavior it describes and kept in sync with the code.
 | [`realtime-protocol.md`](realtime-protocol.md) | WebSocket data-plane framing and lifecycle |
 | [`plugin-system.md`](plugin-system.md) | Client vs. server plugin model |
 | [`web-client.md`](web-client.md) | Web UI structure, design tokens, themes, and accessibility |
+| [`android-network-security.md`](android-network-security.md) | Android server setup, host matching, and runtime TLS trust |
 | [`operations.md`](operations.md) | Configuration, deployment, migrations, and health |
 
 ## Architecture Decision Records
@@ -27,6 +28,7 @@ behavior it describes and kept in sync with the code.
 | [0005](adr/0005-plugin-tiers.md) | Two-tier plugin model | Accepted |
 | [0006](adr/0006-mysql-sharding.md) | MySQL sharding, replicas, and Redis Cluster | Accepted |
 | [0007](adr/0007-server-plugin-host-api.md) | Server plugin host API and isolated hooks | Accepted |
+| [0008](adr/0008-android-runtime-network-trust.md) | Runtime network trust in the Android client | Accepted |
 
 ## Conventions
 

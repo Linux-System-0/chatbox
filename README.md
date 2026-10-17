@@ -396,6 +396,7 @@ sequenceDiagram
 - [x] MySQL sharding across multiple shards
 - [ ] Automatic MySQL failover and replica health ejection
 - [x] Plugin system (client language packs/themes, server plugins)
+- [x] Android client: runtime server address and network trust policy
 - [x] Observability (structured tracing) and rate limiting
 - [ ] Load testing and capacity tuning
 
