@@ -52,6 +52,17 @@ future use.
   than growing memory without limit.
 - Offline messages are persisted and delivered on reconnect via `resume`.
 
+## Presence
+
+A user is online while at least one registered gateway connection is alive for
+them across the whole cluster — not merely on the local node. The gateway
+refreshes the presence TTL on every heartbeat, broadcasts `presence` changes to
+the user's contacts and conversation peers, and keeps a user online until the
+last connection (on any node) is gone. Clients should bootstrap the initial
+state with `GET /api/v1/presence?user_ids=...` after connecting and then apply
+`presence` frames. The Web client never infers a peer's online state from its
+own socket status.
+
 ## Routing
 
 The gateway maintains the connection registry in Redis:

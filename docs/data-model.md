@@ -23,6 +23,7 @@ can round-trip them without precision loss. Timestamps are stored in UTC.
 | `id` | Snowflake | Primary key |
 | `user_id` | string(64) | Unique custom ID |
 | `display_name` | string(64)? | Falls back to `user_id` when unset |
+| `avatar_url` | text? | Optional avatar (`http(s)` URL or `data:image/...` URL) |
 | `password_hash` | string | Argon2id |
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | |
@@ -95,10 +96,22 @@ cursor (`last_read_seq`) and optional mute deadline.
 
 ### Contact & FriendRequest
 
-- `Contact` (`owner_id`, `contact_id`, `remark`) is created only after a
-  friend request is **accepted**.
+- `Contact` (`owner_id`, `contact_id`, `remark`, `remark_avatar_url`) is
+  created only after a friend request is **accepted**. The remark and remark
+  avatar are private to the owner of the contact list.
 - `FriendRequest` (`id`, `from_id`, `to_id`, `message?`, `status`, timestamps)
   has status `pending`, `accepted`, or `rejected`.
+- A direct conversation may only be created (and messages sent in it) while
+  both users are contacts of each other.
+- A contact the owner has blocked is omitted from the contact list and appears
+  only in the block list until unblocked.
+
+### Display precedence
+
+Clients render a person's name as **contact remark → display name → custom user
+ID** and their avatar as **contact remark avatar → profile avatar → generated
+default avatar**. For group conversations the group name is used instead of a
+contact remark.
 
 ### Group
 

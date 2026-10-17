@@ -21,9 +21,18 @@ the design system; protocol details live in [`api.md`](api.md) and
 ```
 
 - `routes/+layout.svelte` owns the app shell (header, global tokens, resets).
+  The signed-in user chip opens the profile dialog, where the custom user ID,
+  display name, and avatar can be changed.
 - `routes/chat/+page.svelte` is the main workspace. The sidebar has two tabs —
   **Chats** and **Contacts** (which also holds friend requests and the block
   list) — to keep the navigation compact.
+- Direct chats are started from the contact list. Friend requests separate
+  incoming requests (with accept/reject actions) from outgoing pending ones.
+  Contacts expose remark and remark-avatar editing, and a blocked contact moves
+  to the block list until unblocked.
+- The chats tab can create a group from contacts. Selecting a group opens its
+  member panel, where admins can rename the group or add/kick/mute members and
+  the owner can dissolve it; every member can leave.
 - `routes/login` and `routes/register` render a centered, branded auth card.
 
 On narrow viewports the sidebar and the conversation occupy the same grid cell;
@@ -94,8 +103,16 @@ onto its design tokens:
 `chat/+page.svelte` groups consecutive messages from the same sender within
 five minutes and renders the timestamp only on the last bubble of a group. Day
 separators are inserted whenever the calendar day changes; system notices render
-as centered pills. Avatars derive a stable hue from the numeric sender /
-conversation id, so no extra profile fetch is required.
+as centered pills. Names follow **contact remark → display name → custom user
+ID**, and avatars follow **contact remark avatar → profile avatar → generated
+default avatar**. The generated fallback derives a stable hue from the numeric
+user id, so no profile fetch is required. Group messages show the sender name
+and avatar in front of each message group.
+
+Direct-chat presence is taken from the `presence` frames and the presence
+bootstrap endpoint, not from the local WebSocket connection status. The local
+connection state is shown only while connecting or offline; once connected, the
+toolbar reflects whether the other participant is actually online.
 
 ## Accessibility
 

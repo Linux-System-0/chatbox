@@ -382,6 +382,8 @@ sequenceDiagram
 - [x] Authentication: ID login, password verification, sessions, multi-device
 - [x] Direct messaging: text + file transfer, offline queue
 - [x] Contact system: add by ID, friend requests, remarks/nicknames
+- [x] Editable profile: custom ID, display name, and avatar
+- [x] Contact remark avatars and block-list-aware contact filtering
 - [x] Group chat: roles, permissions, `@` mentions, mute/kick/invite
 - [x] Search: type (wildcards), time range, content; sorting & jump-to-message
 - [x] Block list for direct chats

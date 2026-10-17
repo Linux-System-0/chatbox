@@ -25,8 +25,24 @@ Errors use a consistent envelope:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/users/me` | Current profile |
-| `PATCH` | `/users/me` | Update display name |
+| `PATCH` | `/users/me` | Update custom ID, display name, or avatar |
 | `GET` | `/users/{user_id}` | Look up a user by custom ID |
+
+`PATCH /users/me` accepts any subset of `user_id`, `display_name`, and
+`avatar_url`. A `null` or empty string clears `display_name` / `avatar_url`.
+Changing `user_id` is rejected when the new ID is already taken. Avatars may be
+an `http(s)` URL or a `data:image/...` URL up to 512 KiB; the backend validates
+and enforces that limit, while the Web client downsizes uploads before sending.
+
+### Presence
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/presence?user_ids=1,2,3` | Current online state for internal user IDs |
+
+Presence is also pushed over WebSocket as `presence` frames. The query endpoint
+lets a freshly connected client bootstrap the state for contacts and open
+conversations.
 
 ## Devices
 
@@ -43,19 +59,30 @@ Errors use a consistent envelope:
 | `PATCH` | `/contacts/{user_id}` | Set a remark/nickname |
 | `DELETE` | `/contacts/{user_id}` | Remove a contact |
 | `POST` | `/contacts/requests` | Send a friend request by user ID |
-| `GET` | `/contacts/requests` | List incoming/outgoing requests |
-| `POST` | `/contacts/requests/{id}/accept` | Accept |
-| `POST` | `/contacts/requests/{id}/reject` | Reject |
+| `GET` | `/contacts/requests` | List incoming/outgoing requests with profiles |
+| `POST` | `/contacts/requests/{id}/accept` | Accept (recipient only) |
+| `POST` | `/contacts/requests/{id}/reject` | Reject (recipient only) |
+
+`GET /contacts` returns only accepted contacts that the caller has not blocked.
+`PATCH /contacts/{user_id}` accepts `remark` and `remark_avatar_url`; a `null`
+or empty string clears the field. Only the recipient of a pending request may
+accept or reject it; outgoing requests are pending and expose no accept action.
+A direct conversation can be created only after the contact link exists.
 
 ## Conversations & messages
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/conversations` | List conversations with last-read cursors |
-| `POST` | `/conversations/direct` | Get or create a direct conversation |
+| `POST` | `/conversations/direct` | Get or create a direct conversation (contacts only) |
 | `GET` | `/conversations/{id}/messages` | Page messages (`before`/`after`/`limit`) |
 | `POST` | `/conversations/{id}/messages` | REST send (used by clients without WS) |
 | `POST` | `/conversations/{id}/read` | Advance the read cursor |
+
+`ConversationView` includes `avatar_url`, `peer_id` (direct only), `group_id`
+(group only), and `member_count`, so clients can render the title, avatar, and
+presence state without extra lookups. Direct titles already apply the caller's
+contact remark precedence.
 
 ## Groups
 
@@ -78,6 +105,9 @@ Errors use a consistent envelope:
 | `GET` | `/blocks` | List blocked users |
 | `POST` | `/blocks/{user_id}` | Block a user |
 | `DELETE` | `/blocks/{user_id}` | Unblock a user |
+
+Blocking does not delete the contact link, but the blocked user is hidden from
+`GET /contacts` until they are unblocked.
 
 ## Files
 
