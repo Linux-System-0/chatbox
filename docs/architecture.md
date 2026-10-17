@@ -43,6 +43,23 @@ backend/
   heartbeats, so a message is routed to the owning gateway instead of being
   broadcast to every node.
 
+## Storage scaling
+
+- **MySQL shards.** A deployment has one or more shards. Each shard is a
+  primary plus zero or more read replicas and carries the full schema; rows are
+  distributed across shards by a stable shard key (`conversation_id` for the
+  message plane, `user_id`/`owner_id`/`id` for the rest). Operations that know
+  their key hit one shard; lookups and list queries without a routing key fan
+  out across shards and merge. See ADR 0006 for the routing table.
+- **Read replicas.** Reads round-robin across a shard's replicas and fall back
+  to the primary; writes always go to the primary. Read-your-writes is handled
+  by reading the primary on the write path, with lag-aware routing as future
+  work.
+- **Redis.** A single node or a Redis Cluster can back the cache, presence,
+  registry, rate limiter, and pub/sub. The registry uses one hash per user so it
+  never needs `SCAN`; pub/sub subscribes to one seed node because a cluster
+  forwards published messages to every node.
+
 ## Message pipeline
 
 1. **Accept** — the client sends with a `client_msg_id`; the API validates auth

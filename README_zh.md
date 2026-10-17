@@ -110,8 +110,8 @@ ChatBox 提供**插件系统**，可在**无需修改核心**的前提下扩展�
 | Web 客户端 | **SvelteKit** | SSR + SPA，使用 WebSocket 实现实时通信 |
 | Android 客户端 | **Kotlin** | 原生 Android |
 | 后端 | **Rust** | 异步、内存安全、可水平扩展 |
-| 主数据库 | **MySQL** | **必须**；支持集群（主/从） |
-| 缓存 / 发布订阅 | **Redis** | 支持集群；可在配置中选择关闭 |
+| 主数据库 | **MySQL** | **必须**；支持集群（分片、主/从） |
+| 缓存 / 发布订阅 | **Redis** | 支持集群（单节点或 Redis 集群）；可在配置中选择关闭 |
 
 ---
 
@@ -228,8 +228,10 @@ cp deploy/.env.example deploy/.env
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `DATABASE_URL` | MySQL 主库连接串 | `mysql://user:pass@127.0.0.1:3306/chatbox` |
-| `DATABASE_REPLICA_URL` | MySQL 只读从库（可选） | — |
+| `MYSQL_SHARDS` | MySQL 分片：以 `;` 分隔分片，每个分片内以 `\|` 分隔主库/从库 | `mysql://user:pass@127.0.0.1:3306/chatbox` |
+| `REDIS_URL` | 单节点 Redis 连接串 | `redis://127.0.0.1:6379` |
+| `REDIS_CLUSTER_NODES` | Redis 集群种子节点 URL（逗号分隔）；优先于 `REDIS_URL` | — |
+| `REDIS_ENABLED` | 是否启用 Redis | `true` |
 | `REDIS_URL` | Redis 连接串 | `redis://127.0.0.1:6379` |
 | `REDIS_ENABLED` | 是否启用 Redis | `true` |
 | `JWT_SECRET` | 用于签发认证令牌的密钥 | — |
@@ -258,7 +260,7 @@ cd android
 ./gradlew assembleDebug
 ```
 
-> 上述命令为开发者工作流。未设置 `DATABASE_URL` 时后端默认使用内存存储，因此本地
+> 上述命令为开发者工作流。未设置 `MYSQL_SHARDS` 时后端默认使用内存存储，因此本地
 > 开发无需 MySQL 或 Redis。运行完整技术栈请执行
 > `cd deploy/docker && docker compose up --build`。
 
@@ -337,8 +339,9 @@ sequenceDiagram
 - [x] 搜索：类型（通配符）、时间范围、内容；排序与跳转到消息
 - [x] 单聊拉黑名单
 - [x] Redis 集成（缓存、在线状态、连接注册、限流、扇出）
-- [ ] Redis 集群
+- [x] Redis 集群
 - [x] MySQL 主从读取路由
+- [x] MySQL 多分片分表
 - [ ] MySQL 自动故障切换与副本健康剔除
 - [x] 插件系统（客户端语言包/主题、服务端插件）
 - [x] 可观测性（结构化 tracing）与限流

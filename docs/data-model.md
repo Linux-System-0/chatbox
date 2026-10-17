@@ -133,10 +133,31 @@ Search is scoped by conversation and supports:
 
 ## Storage layout
 
+Rows are distributed across one or more MySQL shards. Every shard has the full
+schema; the table below lists the shard key for each entity (see ADR 0006).
+
+| Entity | Shard key |
+|---|---|
+| `User` | `id` |
+| `Device` | `id` |
+| `Session` | `id` |
+| `Conversation`, `ConversationMember` | `conversation_id` |
+| `Message`, `OutboxEvent` | `conversation_id` |
+| `Attachment` | `id` |
+| `Contact`, `Block` | `owner_id` |
+| `FriendRequest` | `id` |
+| `Group`, `GroupMember` | `group_id` |
+| `plugin_states` | first shard (global) |
+
 - Messages are sharded by `conversation_id`; the uniqueness constraint on
   `(conversation_id, seq)` and `(sender_id, client_msg_id)` lives on the same
   shard.
 - The `outbox` table lives next to `messages` so the append and the publish
   intent commit in one transaction.
+- Lookups and list queries without a routing key (e.g. `get_by_user_id`,
+  `list_for_user`, `find_direct`, outbox `pending`) fan out across shards and
+  merge; the application applies the documented ordering after merging.
+- Filename search resolves matching attachment ids across shards, then filters
+  messages by `attachment_id`, so it never needs a cross-shard join.
 - Read replicas serve read-only queries; writers read their own writes by
   routing briefly to the primary.

@@ -7,9 +7,9 @@ Configuration comes from environment variables (optionally loaded from
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | MySQL primary connection string | in-memory backend when unset |
-| `DATABASE_REPLICA_URL` | MySQL read replica (optional) | — |
-| `REDIS_URL` | Redis connection string | — |
+| `MYSQL_SHARDS` | MySQL shards: `;`-separated shard specs, each a `\|`-separated primary/replica list | in-memory backend when unset |
+| `REDIS_URL` | Single-node Redis connection string | — |
+| `REDIS_CLUSTER_NODES` | Redis Cluster seed-node URLs (comma-separated); overrides `REDIS_URL` | — |
 | `REDIS_ENABLED` | Toggle Redis usage | `true` |
 | `JWT_SECRET` | Secret for signing auth tokens | required in production |
 | `HTTP_BIND` | HTTP listen address | `0.0.0.0:8080` |
@@ -17,22 +17,31 @@ Configuration comes from environment variables (optionally loaded from
 | `PLUGIN_DIR` | Directory scanned for server plugin manifests | `plugins` |
 | `OBJECT_STORAGE_DIR` | Local object storage root for development | `data/objects` |
 
-When `DATABASE_URL` is unset the server starts with the in-memory storage
+`MYSQL_SHARDS` example — two shards, the first with two read replicas:
+
+```text
+mysql://u:p@primary0/db|mysql://u:p@replica0a/db|mysql://u:p@replica0b/db;mysql://u:p@primary1/db
+```
+
+When `MYSQL_SHARDS` is unset the server starts with the in-memory storage
 backend. This is intended for local development and tests only; it does not
 persist across restarts.
 
 ## Storage backends
 
-- **MySQL** — the required production datastore. Apply migrations from
-  `deploy/sql/migrations` before starting a node.
+- **MySQL** — the required production datastore. One or more shards, each with
+  an optional set of read replicas. Every shard needs the full schema: apply
+  migrations from `deploy/sql/migrations` to **each shard's primary** before
+  starting a node. See ADR 0006 for routing and shard keys.
 - **Redis** — optional cache, presence store, connection registry, rate-limit
-  counters, and fan-out transport. When `REDIS_ENABLED=false` the in-process
-  adapters are used.
-- **In-memory** — used by tests and by `DATABASE_URL`-less development.
+  counters, and fan-out transport. A single node (`REDIS_URL`) and a Redis
+  Cluster (`REDIS_CLUSTER_NODES`) are both supported. When `REDIS_ENABLED=false`
+  the in-process adapters are used.
+- **In-memory** — used by tests and by `MYSQL_SHARDS`-less development.
 
 ## Local development
 
-When `DATABASE_URL` is unset the server selects the **in-memory** backend, so
+When `MYSQL_SHARDS` is unset the server selects the **in-memory** backend, so
 the API and WebSocket gateway run without MySQL or Redis:
 
 ```bash

@@ -24,6 +24,7 @@ behavior it describes and kept in sync with the code.
 | [0003](adr/0003-hybrid-fanout.md) | Hybrid push/pull fan-out | Accepted |
 | [0004](adr/0004-transactional-outbox.md) | Transactional outbox for delivery | Accepted |
 | [0005](adr/0005-plugin-tiers.md) | Two-tier plugin model | Accepted |
+| [0006](adr/0006-mysql-sharding.md) | MySQL sharding, replicas, and Redis Cluster | Accepted |
 
 ## Conventions
 

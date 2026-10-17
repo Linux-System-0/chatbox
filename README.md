@@ -130,8 +130,8 @@ administrator-installed and only work when present on the server.**
 | Web client | **SvelteKit** | SSR + SPA, WebSocket for realtime |
 | Android client | **Kotlin** | Native Android |
 | Backend | **Rust** | Async, memory-safe, horizontally scalable |
-| Primary datastore | **MySQL** | **Required**; cluster-ready (primary/replica) |
-| Cache / pub-sub | **Redis** | Cluster-ready; can be disabled in configuration |
+| Primary datastore | **MySQL** | **Required**; cluster-ready (sharding, primary/replica) |
+| Cache / pub-sub | **Redis** | Cluster-ready (single node or Redis Cluster); can be disabled |
 
 ---
 
@@ -261,9 +261,9 @@ cp deploy/.env.example deploy/.env
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | MySQL primary connection string | `mysql://user:pass@127.0.0.1:3306/chatbox` |
-| `DATABASE_REPLICA_URL` | MySQL read replica (optional) | — |
-| `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6379` |
+| `MYSQL_SHARDS` | MySQL shards: `;`-separated, each a `\|`-separated primary/replica list | `mysql://user:pass@127.0.0.1:3306/chatbox` |
+| `REDIS_URL` | Single-node Redis connection string | `redis://127.0.0.1:6379` |
+| `REDIS_CLUSTER_NODES` | Redis Cluster seed-node URLs (comma-separated); overrides `REDIS_URL` | — |
 | `REDIS_ENABLED` | Toggle Redis usage | `true` |
 | `JWT_SECRET` | Secret for signing auth tokens | — |
 | `HTTP_BIND` | HTTP listen address | `0.0.0.0:8080` |
@@ -292,7 +292,7 @@ cd android
 ```
 
 > The commands above reflect the developer workflow. The backend defaults to an
-> in-memory store when `DATABASE_URL` is unset, so it runs without MySQL or
+> in-memory store when `MYSQL_SHARDS` is unset, so it runs without MySQL or
 > Redis for local development. For a full stack, run
 > `cd deploy/docker && docker compose up --build`.
 
@@ -379,8 +379,9 @@ sequenceDiagram
 - [x] Search: type (wildcards), time range, content; sorting & jump-to-message
 - [x] Block list for direct chats
 - [x] Redis integration (cache, presence, registry, rate limits, fan-out)
-- [ ] Redis clustering
+- [x] Redis clustering
 - [x] MySQL primary/replica read routing
+- [x] MySQL sharding across multiple shards
 - [ ] Automatic MySQL failover and replica health ejection
 - [x] Plugin system (client language packs/themes, server plugins)
 - [x] Observability (structured tracing) and rate limiting
