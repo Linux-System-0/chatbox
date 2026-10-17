@@ -15,6 +15,13 @@ to the server.
 Install one from the Web client's plugin manager or from the Android chat
 screen's plugin manager.
 
+Bundled language packs must translate every key in the clients' base
+dictionaries. Validate them with:
+
+```bash
+node scripts/check-language-packs.mjs
+```
+
 ## Server plugins
 
 Server plugins are built, deployed, and enabled by the server administrator.

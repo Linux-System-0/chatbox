@@ -89,6 +89,13 @@ Validation rules:
 Unknown theme color keys are ignored, so a package can carry extra colors for
 future clients. Unknown top-level fields are ignored.
 
+A language pack shipped with the repository must translate **every** key in
+the Web and Android base dictionaries and must keep placeholders such as
+`{count}` intact. Run `node scripts/check-language-packs.mjs` after changing a
+UI string or a bundled pack; `npm run check` in `web/` runs it too. Missing
+keys in a user-installed pack still fall back to English at runtime, but a pack
+that ships with the project should not rely on that fallback.
+
 Example packages live under [`examples/plugins/`](../examples/plugins/).
 
 ### Install, activate, remove
