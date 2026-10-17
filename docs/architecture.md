@@ -25,7 +25,8 @@ backend/
   used by tests and single-process development.
 - **`plugin`** implements the server plugin runtime: hook dispatch with
   deadlines and panic isolation, the JSON ABI for dynamically loaded plugins,
-  and the read-only host API (see `plugin-system.md` and ADR 0007). Client
+  and the read-only host API (see [`plugin-system.md`](plugin-system.md) and
+  [ADR 0007](adr/0007-server-plugin-host-api.md)). Client
   plugins are shipped to clients as manifests and never touch the backend.
 - **`api`** exposes REST handlers and the JWT auth middleware.
 - **`realtime`** terminates WebSocket connections, owns the connection

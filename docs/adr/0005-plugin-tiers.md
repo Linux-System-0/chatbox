@@ -14,8 +14,10 @@ change server behavior, which is both a security and a governance problem.
 
 Split plugins into two explicit tiers:
 
-- **Client plugins** are user-installed, applied globally on that client, and
-  have **no server impact**. The backend only serves their manifests.
+- **Client plugins** are user-installed from a local plugin file, applied
+  only for the signed-in user on that client, and have **no server impact**.
+  The backend only serves optional discovery manifests; it never receives the
+  plugin files.
 - **Server plugins** are administrator-installed, must be deployed **and
   enabled** on the server, and may affect all users. Clients cannot install
   them.
@@ -28,7 +30,7 @@ respective runtimes.
 - The threat model is clear: client plugins cannot escalate to the server.
 - Operators retain full control over server behavior.
 - Two runtimes must be documented and kept distinct (see
-  `plugin-system.md`).
+  [`../plugin-system.md`](../plugin-system.md)).
 
 ## Alternatives considered
 

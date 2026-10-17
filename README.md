@@ -106,11 +106,12 @@ ChatBox ships a **plugin system** so new capabilities can be added **without
 modifying the core**. Plugins come in two distinct kinds, and they differ in
 where they are installed and how far their effects reach:
 
-- **Client plugins** — installed by the **user** on their own device. A client
-  plugin is applied **globally to that client** and only affects local
-  behavior; it **never requires any change on the server**. Typical examples
-  are language packs (translations), UI themes, and other client-side
-  features. Installing or removing one is entirely up to the user.
+- **Client plugins** — installed by the **user** on their own device from a
+  single JSON plugin file. A client plugin is stored **locally, scoped to the
+  signed-in account**, and only affects local behavior; it **never requires a
+  server change or a client rebuild**. Typical examples are language packs
+  (translations), UI themes, and other client-side features. Installing or
+  removing one is entirely up to the user.
 - **Server plugins** — installed by the **server administrator** on the
   backend. A server plugin runs server-side and **must be deployed and enabled
   on the server** before it has any effect. Clients cannot install server
@@ -120,9 +121,12 @@ where they are installed and how far their effects reach:
   and plugins can read profiles and conversations or keep plugin-scoped state
   through a small read-only host API.
 
-In short: **client plugins are user-installed and local (globally applied on
-that client, with no server impact), while server plugins are
-administrator-installed and only work when present on the server.**
+In short: **client plugins are user-installed from a local file and scoped to
+that account on that device, while server plugins are administrator-installed
+and only work when present on the server.**
+
+Example client plugins (Simplified Chinese language pack and a custom theme)
+and a server plugin live under [`examples/plugins/`](examples/plugins/).
 
 ---
 

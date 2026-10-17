@@ -1,0 +1,27 @@
+{
+  "name": "midnight",
+  "version": "1.0.0",
+  "kind": "theme",
+  "api_version": 1,
+  "description": "Midnight palette",
+  "payload": {
+    "id": "midnight",
+    "label": "Midnight",
+    "dark": true,
+    "colors": {
+      "background": "#0e1016",
+      "surface": "#161a23",
+      "surfaceAlt": "#1c212c",
+      "text": "#e8ebf2",
+      "muted": "#98a2b3",
+      "border": "#272d3a",
+      "primary": "#7c7cf0",
+      "primaryHover": "#8f8ff5",
+      "onPrimary": "#0e1016",
+      "primarySoft": "#23264a",
+      "bubbleIn": "#1c212c",
+      "bubbleOut": "#5b5bd6",
+      "bubbleOutText": "#ffffff"
+    }
+  }
+}

@@ -7,26 +7,111 @@ server.
 
 ## Client plugins
 
-- Installed by the **user** on their own device.
-- Applied **globally to that client** and only affect local behavior.
-- **Never require any server change.**
+- Installed by the **user** on their own device from a single plugin file.
+- Stored **locally** and applied **only to the signed-in user** on that
+  device. Removing the account's local data removes the plugins.
+- **Never require any server change or client rebuild.** The server never
+  receives the plugin file.
 - Examples: language packs (translations), UI themes, and other client-side
   features.
 - Installing or removing one is entirely up to the user.
 
-The backend only *serves manifests* that describe available client plugins
-(`GET /api/v1/plugins/client`). A manifest is self-describing data; it cannot
-change server behavior.
+The backend's `GET /api/v1/plugins/client` endpoint may still list manifests
+for discovery, but a manifest is informational data. Installing a client plugin
+never sends the file to the server and never changes server behavior.
+
+### Package format
+
+A client plugin is one self-contained JSON file. The same file works on Web and
+Android.
 
 ```json
 {
-  "name": "zh-CN",
+  "name": "ja",
   "version": "1.0.0",
   "kind": "language-pack",
-  "entry": "translations/zh-CN.json",
-  "description": "Simplified Chinese translations"
+  "api_version": 1,
+  "description": "Japanese translations",
+  "payload": {
+    "locale": "ja",
+    "label": "日本語",
+    "strings": {
+      "login": "ログイン",
+      "register": "アカウント作成"
+    }
+  }
 }
 ```
+
+```json
+{
+  "name": "midnight",
+  "version": "1.0.0",
+  "kind": "theme",
+  "api_version": 1,
+  "description": "Midnight palette",
+  "payload": {
+    "id": "midnight",
+    "label": "Midnight",
+    "dark": true,
+    "colors": {
+      "background": "#0e1016",
+      "surface": "#161a23",
+      "surfaceAlt": "#1c212c",
+      "text": "#e8ebf2",
+      "muted": "#98a2b3",
+      "border": "#272d3a",
+      "primary": "#7c7cf0",
+      "onPrimary": "#0e1016",
+      "bubbleIn": "#1c212c",
+      "bubbleOut": "#5b5bd6",
+      "bubbleOutText": "#ffffff"
+    }
+  }
+}
+```
+
+Validation rules:
+
+| Field | Rule |
+|---|---|
+| `name` | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
+| `version` | Non-empty string |
+| `kind` | `language-pack` or `theme` |
+| `api_version` | Must equal `1` |
+| `payload` | Kind-specific object (see above) |
+| File size | At most 256 KiB |
+| Language `locale` | `^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$` |
+| Language `strings` | Non-empty map of string keys to string values |
+| Theme `id` | Same pattern as `name`; `system`, `light`, and `dark` are reserved |
+| Theme `colors` | At least one known key; values are `#rgb` or `#rrggbb` |
+
+Unknown theme color keys are ignored, so a package can carry extra colors for
+future clients. Unknown top-level fields are ignored.
+
+Example packages live under [`examples/plugins/`](../examples/plugins/).
+
+### Install, activate, remove
+
+1. The user picks a plugin file with the client's install control.
+2. The client parses and validates the package locally.
+3. The package is stored under the **current user's** local plugin directory
+   (Web: `localStorage` keyed by user id; Android: app-private
+   `files/plugins/<encoded user id>/`).
+4. A newly installed language pack becomes the active locale; a newly installed
+   theme becomes the active theme. Both can be switched or removed at any time.
+5. Removing a plugin deletes only that user's copy. If the active language or
+   theme disappears, the client falls back to English and the built-in
+   light/dark scheme.
+
+Plugins are **not synchronized across devices**. Each device installs its own
+files for the signed-in account. Local plugin storage is user data, not a
+security boundary: plugin files are trusted content and should not contain
+secrets.
+
+The Web and Android clients keep a small built-in English dictionary and the
+built-in light/dark color schemes as fallbacks. Language packs and custom
+themes are never compiled into the clients.
 
 ## Server plugins
 

@@ -112,6 +112,10 @@ Files are uploaded **directly to object storage** with a pre-signed URL.
 | `POST` | `/plugins/server/{name}/enable` | Enable a server plugin (admin only) |
 | `POST` | `/plugins/server/{name}/disable` | Disable a server plugin (admin only) |
 
+`GET /plugins/client` is discovery-only. Web and Android install client plugin
+files locally for the signed-in user; the files are never uploaded to the
+server (see [`plugin-system.md`](plugin-system.md)).
+
 ## Health
 
 | Method | Path | Description |
