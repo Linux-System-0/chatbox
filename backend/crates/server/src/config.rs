@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use chatbox_storage::BackendConfig;
+use chatbox_storage::{BackendConfig, ShardConfig};
 
 /// Application configuration.
 #[derive(Debug, Clone)]
@@ -18,12 +18,12 @@ pub struct Config {
     pub node_id: String,
     /// This node's Snowflake number (0..1023).
     pub node_number: u64,
-    /// MySQL primary URL.
-    pub database_url: Option<String>,
-    /// MySQL replica URL.
-    pub database_replica_url: Option<String>,
-    /// Redis URL.
+    /// MySQL shards, each with a primary and optional read replicas.
+    pub mysql_shards: Vec<ShardConfig>,
+    /// Single-node Redis URL.
     pub redis_url: Option<String>,
+    /// Redis Cluster seed-node URLs. Takes precedence over `redis_url`.
+    pub redis_cluster_nodes: Vec<String>,
     /// Whether Redis is enabled.
     pub redis_enabled: bool,
     /// Directory scanned for plugin manifests.
@@ -52,11 +52,10 @@ impl Config {
             .context("NODE_NUMBER must be an integer")?
             & 0x3ff;
 
-        let database_url = std::env::var("DATABASE_URL").ok().filter(|s| !s.is_empty());
-        let database_replica_url = std::env::var("DATABASE_REPLICA_URL")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let mysql_shards = parse_shards(&std::env::var("MYSQL_SHARDS").unwrap_or_default())?;
         let redis_url = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty());
+        let redis_cluster_nodes =
+            parse_list(&std::env::var("REDIS_CLUSTER_NODES").unwrap_or_default());
         let redis_enabled = env_or("REDIS_ENABLED", "true")
             .parse::<bool>()
             .unwrap_or(true);
@@ -88,9 +87,9 @@ impl Config {
             jwt_secret,
             node_id,
             node_number,
-            database_url,
-            database_replica_url,
+            mysql_shards,
             redis_url,
+            redis_cluster_nodes,
             redis_enabled,
             plugin_dir,
             object_dir,
@@ -104,9 +103,9 @@ impl Config {
     /// Build the storage backend configuration.
     pub fn backend(&self) -> BackendConfig {
         BackendConfig {
-            database_url: self.database_url.clone(),
-            database_replica_url: self.database_replica_url.clone(),
+            mysql_shards: self.mysql_shards.clone(),
             redis_url: self.redis_url.clone(),
+            redis_cluster_nodes: self.redis_cluster_nodes.clone(),
             redis_enabled: self.redis_enabled,
             object_dir: self.object_dir.clone(),
             public_base_url: self.public_base_url.clone(),
@@ -119,4 +118,74 @@ fn env_or(key: &str, default: &str) -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+/// Parse `MYSQL_SHARDS`.
+///
+/// Shards are separated by `;`. Within a shard, hosts are separated by `|`:
+/// the first host is the writable primary and the rest are read replicas. For
+/// example, two shards where the first has two replicas:
+///
+/// ```text
+/// mysql://u:p@primary0/db|mysql://u:p@replica0a/db|mysql://u:p@replica0b/db;mysql://u:p@primary1/db
+/// ```
+fn parse_shards(raw: &str) -> Result<Vec<ShardConfig>> {
+    let mut shards = Vec::new();
+    for spec in raw.split(';') {
+        let hosts: Vec<String> = spec
+            .split('|')
+            .map(|host| host.trim().to_string())
+            .filter(|host| !host.is_empty())
+            .collect();
+        let Some((primary, replicas)) = hosts.split_first() else {
+            continue;
+        };
+        shards.push(ShardConfig {
+            primary: primary.clone(),
+            replicas: replicas.to_vec(),
+        });
+    }
+    Ok(shards)
+}
+
+/// Parse a comma-separated list, dropping empty entries.
+fn parse_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_list, parse_shards};
+
+    #[test]
+    fn parses_single_shard_with_replicas() {
+        let shards = parse_shards("mysql://p0/db|mysql://r0a/db|mysql://r0b/db").unwrap();
+        assert_eq!(shards.len(), 1);
+        assert_eq!(shards[0].primary, "mysql://p0/db");
+        assert_eq!(shards[0].replicas, vec!["mysql://r0a/db", "mysql://r0b/db"]);
+    }
+
+    #[test]
+    fn parses_multiple_shards() {
+        let shards = parse_shards("mysql://p0/db;mysql://p1/db|mysql://r1/db").unwrap();
+        assert_eq!(shards.len(), 2);
+        assert!(shards[0].replicas.is_empty());
+        assert_eq!(shards[1].primary, "mysql://p1/db");
+        assert_eq!(shards[1].replicas, vec!["mysql://r1/db"]);
+    }
+
+    #[test]
+    fn ignores_empty_shard_specs() {
+        let shards = parse_shards("; mysql://p0/db ;; ").unwrap();
+        assert_eq!(shards.len(), 1);
+    }
+
+    #[test]
+    fn parses_cluster_nodes() {
+        let nodes = parse_list("redis://h1:6379, redis://h2:6379,");
+        assert_eq!(nodes, vec!["redis://h1:6379", "redis://h2:6379"]);
+    }
 }

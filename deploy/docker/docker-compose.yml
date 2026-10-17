@@ -43,7 +43,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     environment:
-      DATABASE_URL: mysql://chatbox:chatbox@mysql:3306/chatbox
+      MYSQL_SHARDS: mysql://chatbox:chatbox@mysql:3306/chatbox
       REDIS_URL: redis://redis:6379
       REDIS_ENABLED: "true"
       JWT_SECRET: development-secret-change-me

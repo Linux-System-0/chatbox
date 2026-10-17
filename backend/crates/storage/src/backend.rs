@@ -15,16 +15,35 @@ use crate::mysql::MySqlStore;
 use crate::object::LocalObjectStorage;
 use crate::redis::RedisInfra;
 
+/// One MySQL shard: a writable primary plus zero or more read replicas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardConfig {
+    /// Primary connection string.
+    pub primary: String,
+    /// Read-replica connection strings served round-robin.
+    pub replicas: Vec<String>,
+}
+
+impl ShardConfig {
+    /// A shard with no replicas.
+    pub fn primary(primary: impl Into<String>) -> Self {
+        Self {
+            primary: primary.into(),
+            replicas: Vec::new(),
+        }
+    }
+}
+
 /// Configuration selecting the storage backend.
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
-    /// MySQL primary URL. When `None`, the in-memory backend is used.
-    pub database_url: Option<String>,
-    /// Optional MySQL read replica URL.
-    pub database_replica_url: Option<String>,
-    /// Redis URL.
+    /// MySQL shards. When empty, the in-memory backend is used.
+    pub mysql_shards: Vec<ShardConfig>,
+    /// Single-node Redis URL.
     pub redis_url: Option<String>,
-    /// Whether to use Redis when a URL is available.
+    /// Redis Cluster seed-node URLs. Takes precedence over `redis_url`.
+    pub redis_cluster_nodes: Vec<String>,
+    /// Whether to use Redis when a URL or cluster node is available.
     pub redis_enabled: bool,
     /// Directory backing local object storage.
     pub object_dir: PathBuf,
@@ -35,9 +54,9 @@ pub struct BackendConfig {
 impl Default for BackendConfig {
     fn default() -> Self {
         Self {
-            database_url: None,
-            database_replica_url: None,
+            mysql_shards: Vec::new(),
             redis_url: None,
+            redis_cluster_nodes: Vec::new(),
             redis_enabled: false,
             object_dir: PathBuf::from("data/objects"),
             public_base_url: String::new(),
@@ -59,12 +78,8 @@ pub struct Backend {
 impl Backend {
     /// Connect every adapter described by the configuration.
     pub async fn connect(config: BackendConfig) -> Result<Self> {
-        if let Some(url) = config.database_url.clone() {
-            let store = MySqlStore::connect(&url).await?;
-            let store = match &config.database_replica_url {
-                Some(replica) => store.with_replica(replica).await?,
-                None => store,
-            };
+        if !config.mysql_shards.is_empty() {
+            let store = MySqlStore::connect_shards(config.mysql_shards.clone()).await?;
             let stores = store.stores();
             let infra = build_infra(&config).await?;
             Ok(Self {
@@ -111,18 +126,29 @@ async fn build_infra(config: &BackendConfig) -> Result<Infra> {
         config.public_base_url.clone(),
     )?);
 
-    if config.redis_enabled
-        && let Some(url) = &config.redis_url
-    {
-        let redis = Arc::new(RedisInfra::connect(url).await?);
-        return Ok(Infra {
-            cache: redis.clone() as Arc<dyn Cache>,
-            presence: redis.clone() as Arc<dyn PresenceStore>,
-            registry: redis.clone() as Arc<dyn ConnectionRegistry>,
-            bus: redis.clone() as Arc<dyn MessageBus>,
-            rate_limiter: redis.clone() as Arc<dyn RateLimiter>,
-            objects,
-        });
+    if config.redis_enabled {
+        if !config.redis_cluster_nodes.is_empty() {
+            let redis = Arc::new(RedisInfra::connect_cluster(&config.redis_cluster_nodes).await?);
+            return Ok(Infra {
+                cache: redis.clone() as Arc<dyn Cache>,
+                presence: redis.clone() as Arc<dyn PresenceStore>,
+                registry: redis.clone() as Arc<dyn ConnectionRegistry>,
+                bus: redis.clone() as Arc<dyn MessageBus>,
+                rate_limiter: redis.clone() as Arc<dyn RateLimiter>,
+                objects,
+            });
+        }
+        if let Some(url) = &config.redis_url {
+            let redis = Arc::new(RedisInfra::connect(url).await?);
+            return Ok(Infra {
+                cache: redis.clone() as Arc<dyn Cache>,
+                presence: redis.clone() as Arc<dyn PresenceStore>,
+                registry: redis.clone() as Arc<dyn ConnectionRegistry>,
+                bus: redis.clone() as Arc<dyn MessageBus>,
+                rate_limiter: redis.clone() as Arc<dyn RateLimiter>,
+                objects,
+            });
+        }
     }
 
     let memory = Arc::new(MemoryStore::new());

@@ -15,4 +15,4 @@ pub mod mysql;
 pub mod object;
 pub mod redis;
 
-pub use backend::{Backend, BackendConfig};
+pub use backend::{Backend, BackendConfig, ShardConfig};

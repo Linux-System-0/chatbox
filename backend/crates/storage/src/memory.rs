@@ -2,7 +2,7 @@
 //!
 //! These adapters implement every core port over shared, process-local state.
 //! They power the test suite and the development backend selected when no
-//! `DATABASE_URL` is configured. State is not persisted across restarts.
+//! `MYSQL_SHARDS` is configured. State is not persisted across restarts.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;

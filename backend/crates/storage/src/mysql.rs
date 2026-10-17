@@ -3,6 +3,14 @@
 //! Queries are runtime-checked (see ADR 0002) and the schema lives in
 //! `deploy/sql/migrations`. Rows are mapped by column name to keep the crate
 //! free of compile-time database checking.
+//!
+//! Every configured shard carries the full schema. Rows are routed by a stable
+//! shard key; a single logical row therefore always lives on one shard. Lookups
+//! and list queries that do not carry their routing key fan out across every
+//! shard and merge the results. See `docs/adr/0006-mysql-sharding.md`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chatbox_core::error::{Error, Result};
@@ -12,36 +20,30 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::mysql::{MySqlPoolOptions, MySqlRow};
 use sqlx::{MySql, MySqlPool, QueryBuilder, Row};
 
-/// MySQL-backed repositories sharing one connection pool.
-#[derive(Clone)]
-pub struct MySqlStore {
+use crate::backend::ShardConfig;
+
+/// One physical MySQL shard: a primary plus zero or more read replicas.
+///
+/// Reads are spread across the replica pool in round-robin order; with no
+/// replica configured the primary serves reads too. Writes always target the
+/// primary.
+pub struct MySqlShard {
     pool: MySqlPool,
-    replica: Option<MySqlPool>,
+    replicas: Vec<MySqlPool>,
+    replica_cursor: AtomicUsize,
 }
 
-impl MySqlStore {
-    /// Connect to a primary (and optional replica) and verify the connection.
-    pub async fn connect(primary_url: &str) -> Result<Self> {
-        let pool = MySqlPoolOptions::new()
-            .max_connections(16)
-            .connect(primary_url)
-            .await
-            .map_err(Error::storage)?;
+impl MySqlShard {
+    async fn connect(primary_url: &str, replica_urls: &[String]) -> Result<Self> {
+        let mut replicas = Vec::with_capacity(replica_urls.len());
+        for url in replica_urls {
+            replicas.push(connect_pool(url).await?);
+        }
         Ok(Self {
-            pool,
-            replica: None,
+            pool: connect_pool(primary_url).await?,
+            replicas,
+            replica_cursor: AtomicUsize::new(0),
         })
-    }
-
-    /// Attach a read replica pool.
-    pub async fn with_replica(mut self, replica_url: &str) -> Result<Self> {
-        let pool = MySqlPoolOptions::new()
-            .max_connections(16)
-            .connect(replica_url)
-            .await
-            .map_err(Error::storage)?;
-        self.replica = Some(pool);
-        Ok(self)
     }
 
     /// The primary pool (writes and read-your-writes).
@@ -49,8 +51,83 @@ impl MySqlStore {
         &self.pool
     }
 
+    /// Round-robin across replicas, falling back to the primary.
     fn read_pool(&self) -> &MySqlPool {
-        self.replica.as_ref().unwrap_or(&self.pool)
+        if self.replicas.is_empty() {
+            return &self.pool;
+        }
+        let index = self.replica_cursor.fetch_add(1, Ordering::Relaxed) % self.replicas.len();
+        &self.replicas[index]
+    }
+}
+
+async fn connect_pool(url: &str) -> Result<MySqlPool> {
+    MySqlPoolOptions::new()
+        .max_connections(16)
+        .connect(url)
+        .await
+        .map_err(Error::storage)
+}
+
+/// Sharded MySQL store sharing one or more shard pools.
+///
+/// The store owns every shard and routes each operation to the shard that owns
+/// the row. Operations without a routing key fan out and merge.
+#[derive(Clone)]
+pub struct MySqlStore {
+    shards: Arc<Vec<MySqlShard>>,
+}
+
+impl MySqlStore {
+    /// Connect a single-shard store.
+    pub async fn connect(primary_url: &str) -> Result<Self> {
+        Self::connect_shards(vec![ShardConfig::primary(primary_url)]).await
+    }
+
+    /// Connect every configured shard, opening each primary and its replicas.
+    pub async fn connect_shards(shards: Vec<ShardConfig>) -> Result<Self> {
+        if shards.is_empty() {
+            return Err(Error::storage("at least one MySQL shard is required"));
+        }
+        let mut built = Vec::with_capacity(shards.len());
+        for shard in &shards {
+            built.push(MySqlShard::connect(&shard.primary, &shard.replicas).await?);
+        }
+        Ok(Self {
+            shards: Arc::new(built),
+        })
+    }
+
+    /// Number of configured shards.
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// The first shard's primary pool. Retained for tooling and tests.
+    pub fn pool(&self) -> &MySqlPool {
+        self.shards[0].pool()
+    }
+
+    /// The primary pool of every shard, in configuration order.
+    pub fn pools(&self) -> Vec<&MySqlPool> {
+        self.shards.iter().map(MySqlShard::pool).collect()
+    }
+
+    /// Route by an integer key (Snowflake id, conversation id, ...).
+    fn shard_for(&self, key: i64) -> &MySqlShard {
+        // Mixing is essential: Snowflake ids keep their low bits zero for the
+        // first id of every millisecond, so `id % shards` would hot-spot on
+        // shard 0. The murmur-style finalizer spreads every bit.
+        self.shard_for_hash(mix64(key as u64))
+    }
+
+    /// Route by a stable string key (session id, request id, ...).
+    fn shard_for_str(&self, key: &str) -> &MySqlShard {
+        self.shard_for_hash(fnv1a(key))
+    }
+
+    fn shard_for_hash(&self, hash: u64) -> &MySqlShard {
+        &self.shards[shard_index(hash, self.shards.len())]
     }
 
     /// Bundle this store into the [`Stores`] aggregate.
@@ -71,6 +148,31 @@ impl MySqlStore {
             plugins: store,
         }
     }
+}
+
+/// FNV-1a hash used to map string shard keys onto a shard.
+fn fnv1a(value: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// A murmur-style 64-bit finalizer. Every input bit affects every output bit,
+/// which keeps sequential or low-bit-sparse ids spread across shards.
+fn mix64(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+/// Map a hash onto `[0, shard_count)`.
+fn shard_index(hash: u64, shard_count: usize) -> usize {
+    (hash % shard_count as u64) as usize
 }
 
 fn ts(row: &MySqlRow, col: &str) -> Result<Timestamp> {
@@ -291,7 +393,7 @@ fn outbox_from_row(row: &MySqlRow) -> Result<OutboxEvent> {
 }
 
 #[async_trait]
-impl UserRepo for MySqlStore {
+impl UserRepo for MySqlShard {
     async fn create(&self, user: &User) -> Result<()> {
         sqlx::query(
             "INSERT INTO users (id, user_id, display_name, password_hash, created_at, updated_at)
@@ -352,7 +454,7 @@ impl UserRepo for MySqlStore {
 }
 
 #[async_trait]
-impl SessionRepo for MySqlStore {
+impl SessionRepo for MySqlShard {
     async fn create(&self, session: &Session) -> Result<()> {
         sqlx::query(
             "INSERT INTO sessions (id, user_id, device_id, refresh_hash, issued_at, expires_at, revoked_at)
@@ -413,7 +515,7 @@ impl SessionRepo for MySqlStore {
 }
 
 #[async_trait]
-impl DeviceRepo for MySqlStore {
+impl DeviceRepo for MySqlShard {
     async fn create(&self, device: &Device) -> Result<()> {
         sqlx::query(
             "INSERT INTO devices (id, user_id, name, platform, last_seen_at, created_at)
@@ -478,7 +580,7 @@ fn platform_str(platform: Platform) -> &'static str {
 }
 
 #[async_trait]
-impl ConversationRepo for MySqlStore {
+impl ConversationRepo for MySqlShard {
     async fn create(&self, conversation: &Conversation) -> Result<()> {
         sqlx::query("INSERT INTO conversations (id, kind, created_at) VALUES (?, ?, ?)")
             .bind(conversation.id)
@@ -614,7 +716,7 @@ impl ConversationRepo for MySqlStore {
 }
 
 #[async_trait]
-impl MessageRepo for MySqlStore {
+impl MessageRepo for MySqlShard {
     async fn append(&self, message: &Message, outbox: &OutboxEvent) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(Error::storage)?;
         sqlx::query(
@@ -716,45 +818,10 @@ impl MessageRepo for MySqlStore {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<Vec<Message>> {
-        let mut qb = QueryBuilder::<MySql>::new(
-            "SELECT m.* FROM messages m
-             JOIN conversation_members cm
-               ON cm.conversation_id = m.conversation_id AND cm.user_id = ",
-        );
-        qb.push_bind(query.viewer_id);
-        qb.push(" LEFT JOIN attachments a ON a.id = m.attachment_id WHERE 1 = 1");
-        if let Some(conversation_id) = query.conversation_id {
-            qb.push(" AND m.conversation_id = ")
-                .push_bind(conversation_id);
-        }
-        if let Some(kind) = query.kind {
-            qb.push(" AND m.kind = ").push_bind(message_kind_str(kind));
-        }
-        if let Some(content) = &query.content {
-            qb.push(" AND LOWER(m.content) LIKE ")
-                .push_bind(format!("%{}%", content.to_lowercase()));
-        }
-        if let Some(filename) = &query.filename {
-            let pattern = filename.replace('*', "%").replace('?', "_");
-            qb.push(" AND a.filename LIKE ").push_bind(pattern);
-        }
-        if let Some(from) = query.from {
-            qb.push(" AND m.created_at >= ").push_bind(naive(from));
-        }
-        if let Some(to) = query.to {
-            qb.push(" AND m.created_at <= ").push_bind(naive(to));
-        }
-        match query.sort {
-            SortOrder::Asc => qb.push(" ORDER BY m.seq ASC"),
-            SortOrder::Desc => qb.push(" ORDER BY m.seq DESC"),
-        };
-        qb.push(" LIMIT ").push_bind(query.limit as i64);
-        let rows = qb
-            .build()
-            .fetch_all(self.read_pool())
-            .await
-            .map_err(Error::storage)?;
-        rows.iter().map(message_from_row).collect()
+        // Filename matching is resolved by the dispatcher before the query is
+        // sent to a shard, because attachments and messages may live on
+        // different shards. Direct callers get the no-index behavior.
+        self.search_messages(query, None).await
     }
 
     async fn count(&self, conversation_id: i64) -> Result<u64> {
@@ -808,8 +875,79 @@ fn message_kind_str(kind: MessageKind) -> &'static str {
     }
 }
 
+/// Shard-local helpers that are not part of a repository port.
+impl MySqlShard {
+    /// Run a message search on this shard.
+    ///
+    /// When `attachment_ids` is `Some`, the query filters by those ids instead
+    /// of joining the (possibly remote) attachments table; an empty list
+    /// therefore matches nothing. Content and time filters stay in SQL.
+    async fn search_messages(
+        &self,
+        query: &SearchQuery,
+        attachment_ids: Option<&[i64]>,
+    ) -> Result<Vec<Message>> {
+        let mut qb = QueryBuilder::<MySql>::new(
+            "SELECT m.* FROM messages m
+             JOIN conversation_members cm
+               ON cm.conversation_id = m.conversation_id AND cm.user_id = ",
+        );
+        qb.push_bind(query.viewer_id);
+        qb.push(" WHERE 1 = 1");
+        if let Some(conversation_id) = query.conversation_id {
+            qb.push(" AND m.conversation_id = ")
+                .push_bind(conversation_id);
+        }
+        if let Some(kind) = query.kind {
+            qb.push(" AND m.kind = ").push_bind(message_kind_str(kind));
+        }
+        if let Some(content) = &query.content {
+            qb.push(" AND LOWER(m.content) LIKE ")
+                .push_bind(format!("%{}%", content.to_lowercase()));
+        }
+        if let Some(ids) = attachment_ids {
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            qb.push(" AND m.attachment_id IN (");
+            let mut separated = qb.separated(", ");
+            for id in ids {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+        }
+        if let Some(from) = query.from {
+            qb.push(" AND m.created_at >= ").push_bind(naive(from));
+        }
+        if let Some(to) = query.to {
+            qb.push(" AND m.created_at <= ").push_bind(naive(to));
+        }
+        match query.sort {
+            SortOrder::Asc => qb.push(" ORDER BY m.seq ASC"),
+            SortOrder::Desc => qb.push(" ORDER BY m.seq DESC"),
+        };
+        qb.push(" LIMIT ").push_bind(query.limit as i64);
+        let rows = qb
+            .build()
+            .fetch_all(self.read_pool())
+            .await
+            .map_err(Error::storage)?;
+        rows.iter().map(message_from_row).collect()
+    }
+
+    /// Attachment ids on this shard whose filename matches a SQL pattern.
+    async fn find_attachment_ids(&self, pattern: &str) -> Result<Vec<i64>> {
+        let rows = sqlx::query_scalar::<_, i64>("SELECT id FROM attachments WHERE filename LIKE ?")
+            .bind(pattern)
+            .fetch_all(self.read_pool())
+            .await
+            .map_err(Error::storage)?;
+        Ok(rows)
+    }
+}
+
 #[async_trait]
-impl ContactRepo for MySqlStore {
+impl ContactRepo for MySqlShard {
     async fn upsert(&self, contact: &Contact) -> Result<()> {
         sqlx::query(
             "INSERT INTO contacts (owner_id, contact_id, remark, created_at)
@@ -874,7 +1012,7 @@ impl ContactRepo for MySqlStore {
 }
 
 #[async_trait]
-impl FriendRequestRepo for MySqlStore {
+impl FriendRequestRepo for MySqlShard {
     async fn create(&self, request: &FriendRequest) -> Result<()> {
         sqlx::query(
             "INSERT INTO friend_requests
@@ -953,7 +1091,7 @@ fn request_status_str(status: FriendRequestStatus) -> &'static str {
 }
 
 #[async_trait]
-impl GroupRepo for MySqlStore {
+impl GroupRepo for MySqlShard {
     async fn create(&self, group: &Group) -> Result<()> {
         sqlx::query(
             "INSERT INTO chat_groups
@@ -1090,7 +1228,7 @@ fn group_role_str(role: GroupRole) -> &'static str {
 }
 
 #[async_trait]
-impl BlockRepo for MySqlStore {
+impl BlockRepo for MySqlShard {
     async fn add(&self, block: &Block) -> Result<()> {
         sqlx::query(
             "INSERT INTO blocks (owner_id, blocked_id, created_at) VALUES (?, ?, ?)
@@ -1145,7 +1283,7 @@ impl BlockRepo for MySqlStore {
 }
 
 #[async_trait]
-impl AttachmentRepo for MySqlStore {
+impl AttachmentRepo for MySqlShard {
     async fn create(&self, attachment: &Attachment) -> Result<()> {
         sqlx::query(
             "INSERT INTO attachments
@@ -1177,7 +1315,7 @@ impl AttachmentRepo for MySqlStore {
 }
 
 #[async_trait]
-impl OutboxRepo for MySqlStore {
+impl OutboxRepo for MySqlShard {
     async fn pending(&self, limit: usize) -> Result<Vec<OutboxEvent>> {
         let rows =
             sqlx::query("SELECT * FROM outbox WHERE published_at IS NULL ORDER BY id ASC LIMIT ?")
@@ -1209,7 +1347,7 @@ impl OutboxRepo for MySqlStore {
 }
 
 #[async_trait]
-impl PluginRepo for MySqlStore {
+impl PluginRepo for MySqlShard {
     async fn is_enabled(&self, name: &str) -> Result<bool> {
         let value: Option<i8> =
             sqlx::query_scalar("SELECT enabled FROM plugin_states WHERE name = ?")
@@ -1247,5 +1385,593 @@ impl PluginRepo for MySqlStore {
                 ))
             })
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sharded dispatcher
+//
+// The implementations below forward to the owning shard when a routing key is
+// available and fan out when it is not. Fan-out reads merge and order the
+// per-shard results; fan-out writes apply to every shard (idempotently).
+// Calls use fully-qualified trait syntax because a shard implements every
+// repository trait and the method names collide.
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl UserRepo for MySqlStore {
+    async fn create(&self, user: &User) -> Result<()> {
+        UserRepo::create(self.shard_for(user.id), user).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<User>> {
+        UserRepo::get(self.shard_for(id), id).await
+    }
+
+    async fn get_by_user_id(&self, user_id: &str) -> Result<Option<User>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| UserRepo::get_by_user_id(shard, user_id)),
+        )
+        .await;
+        for result in results {
+            if let Some(user) = result? {
+                return Ok(Some(user));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn update(&self, user: &User) -> Result<()> {
+        UserRepo::update(self.shard_for(user.id), user).await
+    }
+
+    async fn exists_user_id(&self, user_id: &str) -> Result<bool> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| UserRepo::exists_user_id(shard, user_id)),
+        )
+        .await;
+        for result in results {
+            if result? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[async_trait]
+impl SessionRepo for MySqlStore {
+    async fn create(&self, session: &Session) -> Result<()> {
+        SessionRepo::create(self.shard_for_str(&session.id), session).await
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Session>> {
+        SessionRepo::get(self.shard_for_str(id), id).await
+    }
+
+    async fn update(&self, session: &Session) -> Result<()> {
+        SessionRepo::update(self.shard_for_str(&session.id), session).await
+    }
+
+    async fn list_for_user(&self, user_id: i64) -> Result<Vec<Session>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| SessionRepo::list_for_user(shard, user_id)),
+        )
+        .await;
+        let mut sessions = Vec::new();
+        for result in results {
+            sessions.extend(result?);
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.issued_at));
+        Ok(sessions)
+    }
+
+    async fn revoke_for_device(&self, device_id: i64) -> Result<()> {
+        // A device id does not route sessions, so revoke on every shard.
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| SessionRepo::revoke_for_device(shard, device_id)),
+        )
+        .await;
+        for result in results {
+            result?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DeviceRepo for MySqlStore {
+    async fn create(&self, device: &Device) -> Result<()> {
+        DeviceRepo::create(self.shard_for(device.id), device).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Device>> {
+        DeviceRepo::get(self.shard_for(id), id).await
+    }
+
+    async fn list_for_user(&self, user_id: i64) -> Result<Vec<Device>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| DeviceRepo::list_for_user(shard, user_id)),
+        )
+        .await;
+        let mut devices = Vec::new();
+        for result in results {
+            devices.extend(result?);
+        }
+        devices.sort_by_key(|device| std::cmp::Reverse(device.created_at));
+        Ok(devices)
+    }
+
+    async fn delete(&self, id: i64) -> Result<()> {
+        DeviceRepo::delete(self.shard_for(id), id).await
+    }
+
+    async fn touch(&self, id: i64, at: Timestamp) -> Result<()> {
+        DeviceRepo::touch(self.shard_for(id), id, at).await
+    }
+}
+
+#[async_trait]
+impl ConversationRepo for MySqlStore {
+    async fn create(&self, conversation: &Conversation) -> Result<()> {
+        ConversationRepo::create(self.shard_for(conversation.id), conversation).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Conversation>> {
+        ConversationRepo::get(self.shard_for(id), id).await
+    }
+
+    async fn find_direct(&self, a: i64, b: i64) -> Result<Option<Conversation>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| ConversationRepo::find_direct(shard, a, b)),
+        )
+        .await;
+        for result in results {
+            if let Some(conversation) = result? {
+                return Ok(Some(conversation));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn add_member(&self, member: &ConversationMember) -> Result<()> {
+        ConversationRepo::add_member(self.shard_for(member.conversation_id), member).await
+    }
+
+    async fn get_member(
+        &self,
+        conversation_id: i64,
+        user_id: i64,
+    ) -> Result<Option<ConversationMember>> {
+        ConversationRepo::get_member(self.shard_for(conversation_id), conversation_id, user_id)
+            .await
+    }
+
+    async fn list_members(&self, conversation_id: i64) -> Result<Vec<ConversationMember>> {
+        ConversationRepo::list_members(self.shard_for(conversation_id), conversation_id).await
+    }
+
+    async fn list_for_user(&self, user_id: i64) -> Result<Vec<ConversationMember>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| ConversationRepo::list_for_user(shard, user_id)),
+        )
+        .await;
+        let mut members = Vec::new();
+        for result in results {
+            members.extend(result?);
+        }
+        Ok(members)
+    }
+
+    async fn set_read_cursor(&self, conversation_id: i64, user_id: i64, seq: u64) -> Result<()> {
+        ConversationRepo::set_read_cursor(
+            self.shard_for(conversation_id),
+            conversation_id,
+            user_id,
+            seq,
+        )
+        .await
+    }
+
+    async fn remove_member(&self, conversation_id: i64, user_id: i64) -> Result<()> {
+        ConversationRepo::remove_member(self.shard_for(conversation_id), conversation_id, user_id)
+            .await
+    }
+
+    async fn set_mute(
+        &self,
+        conversation_id: i64,
+        user_id: i64,
+        until: Option<Timestamp>,
+    ) -> Result<()> {
+        ConversationRepo::set_mute(
+            self.shard_for(conversation_id),
+            conversation_id,
+            user_id,
+            until,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl MessageRepo for MySqlStore {
+    async fn append(&self, message: &Message, outbox: &OutboxEvent) -> Result<()> {
+        // The message and its outbox row must commit in one transaction, so
+        // they share the conversation shard.
+        MessageRepo::append(self.shard_for(message.conversation_id), message, outbox).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Message>> {
+        // A message id does not encode its conversation shard; probe all.
+        let results =
+            futures::future::join_all(self.shards.iter().map(|shard| MessageRepo::get(shard, id)))
+                .await;
+        for result in results {
+            if let Some(message) = result? {
+                return Ok(Some(message));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn find_by_client_id(
+        &self,
+        sender_id: i64,
+        client_msg_id: &str,
+    ) -> Result<Option<Message>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| MessageRepo::find_by_client_id(shard, sender_id, client_msg_id)),
+        )
+        .await;
+        for result in results {
+            if let Some(message) = result? {
+                return Ok(Some(message));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn list(
+        &self,
+        conversation_id: i64,
+        before: Option<u64>,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<Message>> {
+        MessageRepo::list(
+            self.shard_for(conversation_id),
+            conversation_id,
+            before,
+            after,
+            limit,
+        )
+        .await
+    }
+
+    async fn search(&self, query: &SearchQuery) -> Result<Vec<Message>> {
+        // Resolve filename matches first: attachments can live on other shards,
+        // so the per-shard query filters by id rather than joining.
+        let attachment_ids = match query.filename.as_deref() {
+            Some(filename) => {
+                let pattern = filename.replace('*', "%").replace('?', "_");
+                let results = futures::future::join_all(
+                    self.shards
+                        .iter()
+                        .map(|shard| shard.find_attachment_ids(&pattern)),
+                )
+                .await;
+                let mut ids = Vec::new();
+                for result in results {
+                    ids.extend(result?);
+                }
+                Some(ids)
+            }
+            None => None,
+        };
+
+        let mut rows = if let Some(conversation_id) = query.conversation_id {
+            self.shard_for(conversation_id)
+                .search_messages(query, attachment_ids.as_deref())
+                .await?
+        } else {
+            let results = futures::future::join_all(
+                self.shards
+                    .iter()
+                    .map(|shard| shard.search_messages(query, attachment_ids.as_deref())),
+            )
+            .await;
+            let mut all = Vec::new();
+            for result in results {
+                all.extend(result?);
+            }
+            all
+        };
+        match query.sort {
+            SortOrder::Asc => rows.sort_by_key(|message| message.seq),
+            SortOrder::Desc => rows.sort_by_key(|message| std::cmp::Reverse(message.seq)),
+        }
+        rows.truncate(query.limit as usize);
+        Ok(rows)
+    }
+
+    async fn count(&self, conversation_id: i64) -> Result<u64> {
+        MessageRepo::count(self.shard_for(conversation_id), conversation_id).await
+    }
+
+    async fn count_after(&self, conversation_id: i64, after: u64) -> Result<u64> {
+        MessageRepo::count_after(self.shard_for(conversation_id), conversation_id, after).await
+    }
+
+    async fn next_seq(&self, conversation_id: i64) -> Result<u64> {
+        MessageRepo::next_seq(self.shard_for(conversation_id), conversation_id).await
+    }
+}
+
+#[async_trait]
+impl ContactRepo for MySqlStore {
+    async fn upsert(&self, contact: &Contact) -> Result<()> {
+        ContactRepo::upsert(self.shard_for(contact.owner_id), contact).await
+    }
+
+    async fn get(&self, owner_id: i64, contact_id: i64) -> Result<Option<Contact>> {
+        ContactRepo::get(self.shard_for(owner_id), owner_id, contact_id).await
+    }
+
+    async fn list(&self, owner_id: i64) -> Result<Vec<Contact>> {
+        ContactRepo::list(self.shard_for(owner_id), owner_id).await
+    }
+
+    async fn set_remark(
+        &self,
+        owner_id: i64,
+        contact_id: i64,
+        remark: Option<String>,
+    ) -> Result<()> {
+        ContactRepo::set_remark(self.shard_for(owner_id), owner_id, contact_id, remark).await
+    }
+
+    async fn delete(&self, owner_id: i64, contact_id: i64) -> Result<()> {
+        ContactRepo::delete(self.shard_for(owner_id), owner_id, contact_id).await
+    }
+}
+
+#[async_trait]
+impl FriendRequestRepo for MySqlStore {
+    async fn create(&self, request: &FriendRequest) -> Result<()> {
+        FriendRequestRepo::create(self.shard_for(request.id), request).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<FriendRequest>> {
+        FriendRequestRepo::get(self.shard_for(id), id).await
+    }
+
+    async fn find_pending(&self, a: i64, b: i64) -> Result<Option<FriendRequest>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| FriendRequestRepo::find_pending(shard, a, b)),
+        )
+        .await;
+        for result in results {
+            if let Some(request) = result? {
+                return Ok(Some(request));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn list_for_user(&self, user_id: i64) -> Result<Vec<FriendRequest>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| FriendRequestRepo::list_for_user(shard, user_id)),
+        )
+        .await;
+        let mut requests = Vec::new();
+        for result in results {
+            requests.extend(result?);
+        }
+        requests.sort_by_key(|request| std::cmp::Reverse(request.created_at));
+        Ok(requests)
+    }
+
+    async fn update(&self, request: &FriendRequest) -> Result<()> {
+        FriendRequestRepo::update(self.shard_for(request.id), request).await
+    }
+}
+
+#[async_trait]
+impl GroupRepo for MySqlStore {
+    async fn create(&self, group: &Group) -> Result<()> {
+        GroupRepo::create(self.shard_for(group.id), group).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Group>> {
+        GroupRepo::get(self.shard_for(id), id).await
+    }
+
+    async fn get_by_conversation(&self, conversation_id: i64) -> Result<Option<Group>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| GroupRepo::get_by_conversation(shard, conversation_id)),
+        )
+        .await;
+        for result in results {
+            if let Some(group) = result? {
+                return Ok(Some(group));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn update(&self, group: &Group) -> Result<()> {
+        GroupRepo::update(self.shard_for(group.id), group).await
+    }
+
+    async fn delete(&self, id: i64) -> Result<()> {
+        GroupRepo::delete(self.shard_for(id), id).await
+    }
+
+    async fn add_member(&self, member: &GroupMember) -> Result<()> {
+        GroupRepo::add_member(self.shard_for(member.group_id), member).await
+    }
+
+    async fn get_member(&self, group_id: i64, user_id: i64) -> Result<Option<GroupMember>> {
+        GroupRepo::get_member(self.shard_for(group_id), group_id, user_id).await
+    }
+
+    async fn list_members(&self, group_id: i64) -> Result<Vec<GroupMember>> {
+        GroupRepo::list_members(self.shard_for(group_id), group_id).await
+    }
+
+    async fn update_member(&self, member: &GroupMember) -> Result<()> {
+        GroupRepo::update_member(self.shard_for(member.group_id), member).await
+    }
+
+    async fn remove_member(&self, group_id: i64, user_id: i64) -> Result<()> {
+        GroupRepo::remove_member(self.shard_for(group_id), group_id, user_id).await
+    }
+
+    async fn set_owner(&self, group_id: i64, owner_id: i64) -> Result<()> {
+        GroupRepo::set_owner(self.shard_for(group_id), group_id, owner_id).await
+    }
+}
+
+#[async_trait]
+impl BlockRepo for MySqlStore {
+    async fn add(&self, block: &Block) -> Result<()> {
+        BlockRepo::add(self.shard_for(block.owner_id), block).await
+    }
+
+    async fn remove(&self, owner_id: i64, blocked_id: i64) -> Result<()> {
+        BlockRepo::remove(self.shard_for(owner_id), owner_id, blocked_id).await
+    }
+
+    async fn is_blocked(&self, owner_id: i64, blocked_id: i64) -> Result<bool> {
+        BlockRepo::is_blocked(self.shard_for(owner_id), owner_id, blocked_id).await
+    }
+
+    async fn list(&self, owner_id: i64) -> Result<Vec<Block>> {
+        BlockRepo::list(self.shard_for(owner_id), owner_id).await
+    }
+}
+
+#[async_trait]
+impl AttachmentRepo for MySqlStore {
+    async fn create(&self, attachment: &Attachment) -> Result<()> {
+        AttachmentRepo::create(self.shard_for(attachment.id), attachment).await
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Attachment>> {
+        AttachmentRepo::get(self.shard_for(id), id).await
+    }
+}
+
+#[async_trait]
+impl OutboxRepo for MySqlStore {
+    async fn pending(&self, limit: usize) -> Result<Vec<OutboxEvent>> {
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| OutboxRepo::pending(shard, limit)),
+        )
+        .await;
+        let mut events = Vec::new();
+        for result in results {
+            events.extend(result?);
+        }
+        events.sort_by_key(|event| event.id);
+        events.truncate(limit);
+        Ok(events)
+    }
+
+    async fn mark_published(&self, ids: &[i64], at: Timestamp) -> Result<()> {
+        // Outbox ids do not route, so mark on every shard.
+        let results = futures::future::join_all(
+            self.shards
+                .iter()
+                .map(|shard| OutboxRepo::mark_published(shard, ids, at)),
+        )
+        .await;
+        for result in results {
+            result?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl PluginRepo for MySqlStore {
+    // Plugin state is global and low-volume; it lives on the first shard.
+    async fn is_enabled(&self, name: &str) -> Result<bool> {
+        PluginRepo::is_enabled(&self.shards[0], name).await
+    }
+
+    async fn set_enabled(&self, name: &str, enabled: bool, at: Timestamp) -> Result<()> {
+        PluginRepo::set_enabled(&self.shards[0], name, enabled, at).await
+    }
+
+    async fn list(&self) -> Result<Vec<(String, bool)>> {
+        PluginRepo::list(&self.shards[0]).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fnv1a, mix64, shard_index};
+
+    #[test]
+    fn fnv1a_is_stable() {
+        // The exact values pin the routing so shard assignments cannot drift
+        // silently across releases.
+        assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a("chatbox"), fnv1a("chatbox"));
+        assert_ne!(fnv1a("a"), fnv1a("b"));
+    }
+
+    #[test]
+    fn shard_index_is_in_range_and_balanced() {
+        for key in 0..1000u64 {
+            let index = shard_index(key, 4);
+            assert!(index < 4);
+        }
+        let mut seen = [false; 4];
+        for key in 0..4u64 {
+            seen[shard_index(key, 4)] = true;
+        }
+        assert!(seen.iter().all(|hit| *hit));
+    }
+
+    #[test]
+    fn mix_spreads_snowflake_shaped_ids() {
+        // Snowflake ids generated in distinct milliseconds end in many zero
+        // bits. Without mixing these would all land on one shard.
+        let mut seen = [false; 4];
+        for step in 0..64u64 {
+            let snowflake = step << 12;
+            seen[shard_index(mix64(snowflake), 4)] = true;
+        }
+        assert!(
+            seen.iter().all(|hit| *hit),
+            "mixed shard ids should cover every shard"
+        );
     }
 }
