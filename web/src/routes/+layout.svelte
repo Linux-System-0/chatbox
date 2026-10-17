@@ -23,6 +23,8 @@
 	});
 
 	$: tr = $translator;
+	$: profileName = $session?.user.display_name || $session?.user.user_id || '';
+	$: initial = profileName.trim().slice(0, 1).toUpperCase() || '?';
 	$: {
 		const userId = $session?.user.user_id ?? null;
 		if (userId !== loadedUserId) {
@@ -57,29 +59,62 @@
 		goto('/login');
 	}
 </script>
+
 <div class="app">
 	<header>
-		<a class="brand" href="/chat">ChatBox</a>
+		<a class="brand" href="/chat" aria-label="ChatBox">
+			<span class="logo" aria-hidden="true">
+				<svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+					<path
+						d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.36A1 1 0 0 1 3 18.58V5.5Z"
+						fill="currentColor"
+					/>
+				</svg>
+			</span>
+			<span class="brand-name">ChatBox</span>
+		</a>
+
 		<span class="spacer"></span>
-		<label class="control">
-			{tr('language')}
-			<select value={$locale} on:change={changeLocale}>
-				{#each $languages as language}
-					<option value={language.code}>{language.label}</option>
-				{/each}
-			</select>
-		</label>
-		<label class="control">
-			{tr('theme')}
-			<select value={$theme} on:change={changeTheme}>
-				{#each $themes as option}
-					<option value={option.id}>{option.builtin ? tr(option.label) : option.label}</option>
-				{/each}
-			</select>
-		</label>
+
+		<div class="controls">
+			<label class="control">
+				<span class="sr-only">{tr('language')}</span>
+				<select value={$locale} on:change={changeLocale} title={tr('language')}>
+					{#each $languages as language}
+						<option value={language.code}>{language.label}</option>
+					{/each}
+				</select>
+			</label>
+			<label class="control">
+				<span class="sr-only">{tr('theme')}</span>
+				<select value={$theme} on:change={changeTheme} title={tr('theme')}>
+					{#each $themes as option}
+						<option value={option.id}>{option.builtin ? tr(option.label) : option.label}</option>
+					{/each}
+				</select>
+			</label>
+		</div>
+
 		{#if $session}
-			<button class="ghost" on:click={() => (showPlugins = true)}>{tr('plugins')}</button>
-			<button class="ghost" on:click={logout}>{tr('logout')}</button>
+			<button
+				class="ghost plugin-button"
+				on:click={() => (showPlugins = true)}
+				aria-label={tr('plugins')}
+				title={tr('plugins')}
+			>
+				🧩 <span class="plugin-label">{tr('plugins')}</span>
+			</button>
+			<div class="user" title={profileName}>
+				<span class="avatar" aria-hidden="true">{initial}</span>
+				<span class="username">{profileName}</span>
+			</div>
+			<button class="ghost logout" on:click={logout} aria-label={tr('logout')} title={tr('logout')}>
+				<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" stroke-linecap="round" />
+					<path d="M10 8l-4 4 4 4M6 12h9" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+				<span class="logout-label">{tr('logout')}</span>
+			</button>
 		{/if}
 	</header>
 	<main>
@@ -200,53 +235,162 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
-		padding: 0.6rem 1rem;
+		height: var(--header-h);
+		padding: 0 1rem;
 		background: var(--surface);
 		border-bottom: 1px solid var(--border);
+		position: sticky;
+		top: 0;
+		z-index: 20;
 	}
 	.brand {
-		font-weight: 700;
-		color: var(--accent);
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		color: var(--text);
 		text-decoration: none;
-		font-size: 1.1rem;
+		font-weight: 700;
+		letter-spacing: -0.01em;
+	}
+	.logo {
+		display: grid;
+		place-items: center;
+		width: 2rem;
+		height: 2rem;
+		border-radius: 10px;
+		background: linear-gradient(135deg, var(--accent), #8b5cf6);
+		color: #fff;
+		box-shadow: var(--shadow-sm);
+	}
+	.brand-name {
+		font-size: 1.05rem;
 	}
 	.spacer {
 		flex: 1;
 	}
-	.control {
+	.controls {
 		display: flex;
 		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.8rem;
-		color: var(--muted);
+		gap: 0.4rem;
 	}
-	select,
-	button {
+	.control select {
 		font: inherit;
-	}
-	select {
-		background: var(--bg);
+		font-size: 0.82rem;
+		background: var(--surface-2);
 		color: var(--text);
 		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 0.2rem 0.4rem;
-	}
-	button {
-		border: none;
-		border-radius: 6px;
-		padding: 0.45rem 0.8rem;
-		background: var(--accent);
-		color: var(--accent-contrast);
+		border-radius: var(--radius-sm);
+		padding: 0.35rem 0.5rem;
 		cursor: pointer;
 	}
-	button.ghost {
+	.control select:hover {
+		background: var(--surface-3);
+	}
+	.user {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.25rem 0.6rem 0.25rem 0.25rem;
+		border-radius: 999px;
+		background: var(--surface-2);
+		border: 1px solid var(--border);
+		max-width: 14rem;
+	}
+	.logout {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		white-space: nowrap;
+	}
+	.plugin-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		white-space: nowrap;
+	}
+	.avatar {
+		display: grid;
+		place-items: center;
+		width: 1.7rem;
+		height: 1.7rem;
+		border-radius: 50%;
+		background: linear-gradient(135deg, var(--accent), #8b5cf6);
+		color: #fff;
+		font-size: 0.8rem;
+		font-weight: 700;
+		flex: none;
+	}
+	.username {
+		font-size: 0.85rem;
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	:global(button) {
+		font: inherit;
+		border: none;
+		border-radius: var(--radius-sm);
+		padding: 0.5rem 0.85rem;
+		background: var(--accent);
+		color: var(--accent-contrast);
+		font-weight: 600;
+		cursor: pointer;
+		transition:
+			background 0.15s ease,
+			transform 0.05s ease,
+			opacity 0.15s ease;
+	}
+	:global(button:hover:not(:disabled)) {
+		background: var(--accent-hover);
+	}
+	:global(button:active:not(:disabled)) {
+		transform: translateY(1px);
+	}
+	:global(button:disabled) {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	:global(button.ghost) {
 		background: transparent;
 		color: var(--text);
 		border: 1px solid var(--border);
+	}
+	:global(button.ghost:hover:not(:disabled)) {
+		background: var(--surface-2);
 	}
 	main {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
+	}
+
+	@media (max-width: 640px) {
+		header {
+			gap: 0.4rem;
+			padding: 0 0.6rem;
+		}
+		.brand-name,
+		.username,
+		.user {
+			display: none;
+		}
+		.plugin-label {
+			display: none;
+		}
+		.controls {
+			gap: 0.3rem;
+		}
+		.control select {
+			font-size: 0.78rem;
+			padding: 0.3rem 0.35rem;
+		}
+		.logout-label {
+			display: none;
+		}
+		.logout {
+			padding: 0.45rem;
+		}
 	}
 </style>
