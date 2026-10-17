@@ -30,6 +30,32 @@ persist across restarts.
   adapters are used.
 - **In-memory** — used by tests and by `DATABASE_URL`-less development.
 
+## Local development
+
+When `DATABASE_URL` is unset the server selects the **in-memory** backend, so
+the API and WebSocket gateway run without MySQL or Redis:
+
+```bash
+cd backend
+cargo run                      # listens on 0.0.0.0:8080, in-memory state
+```
+
+A Node-based smoke test exercises registration, WebSocket authentication, REST
+and WebSocket sends, fan-out delivery, history, and search against a running
+node:
+
+```bash
+cargo run &                    # start a node
+node scripts/e2e-smoke.mjs http://127.0.0.1:8080
+```
+
+The Rust test suite covers the domain services over the in-memory backend:
+
+```bash
+cd backend
+cargo test --workspace
+```
+
 ## Database migrations
 
 Migrations are plain SQL files named `NNNN_description.sql` and applied in

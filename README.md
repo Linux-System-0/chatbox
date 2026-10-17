@@ -39,11 +39,15 @@ afterthoughts.
 
 ## 🚧 Project Status
 
-ChatBox is currently in the **design / early-development** stage. The
-architecture, feature set, and engineering guidelines in this document describe
-the target design; concrete components will land incrementally (see the
-Roadmap section). Interfaces and directory layout may change before the
-first stable release.
+ChatBox is in the **early-development** stage. The backend (Rust), web client
+(SvelteKit), and Android client (Kotlin) now implement the core feature set in
+this document: identity and sessions, direct and group messaging, contacts,
+search, the block list, and the two-tier plugin system. The schema also
+supports primary/replica reads and Redis-backed infrastructure. Remaining work
+is tracked in the [Roadmap](#-roadmap).
+
+Interfaces and directory layout may still change before the first stable
+release.
 
 ---
 
@@ -201,7 +205,7 @@ graph TD
 
 ---
 
-## 📁 Repository Layout (planned)
+## 📁 Repository Layout
 
 ```text
 chatbox/
@@ -211,20 +215,19 @@ chatbox/
 │   │   ├── realtime/   # WebSocket gateway
 │   │   ├── workers/    # Fan-out, outbox relay, background jobs
 │   │   ├── core/       # Domain logic, services
-│   │   ├── storage/    # MySQL / Redis data access
-│   │   └── plugin/     # Plugin runtime & interfaces
+│   │   ├── storage/    # MySQL / Redis / in-memory data access
+│   │   ├── plugin/     # Plugin runtime & interfaces
+│   │   └── server/     # Composition root (binary)
 │   └── Cargo.toml
 ├── web/                # SvelteKit web client
 ├── android/            # Kotlin Android client
-├── deploy/             # Docker Compose, migrations, cluster configs
+├── deploy/             # Docker Compose, migrations, env example
 │   ├── docker/
 │   └── sql/
 ├── docs/               # Design docs and ADRs
+├── scripts/            # Developer and smoke-test scripts
 └── README.md
 ```
-
-> ⚠️ The tree above describes the intended structure. The repository is in its
-> design / early stage — see [Project Status](#-project-status).
 
 ---
 
@@ -288,8 +291,10 @@ cd android
 ./gradlew assembleDebug
 ```
 
-> The commands above reflect the intended developer workflow. They will become
-> fully runnable as the corresponding components are implemented.
+> The commands above reflect the developer workflow. The backend defaults to an
+> in-memory store when `DATABASE_URL` is unset, so it runs without MySQL or
+> Redis for local development. For a full stack, run
+> `cd deploy/docker && docker compose up --build`.
 
 ---
 
@@ -366,17 +371,20 @@ sequenceDiagram
 
 ## 🗺️ Roadmap
 
-- [ ] Project scaffolding (backend workspace, web, android)
-- [ ] Authentication: ID login, password verification, sessions, multi-device
-- [ ] Direct messaging: text + file transfer, offline queue
-- [ ] Contact system: add by ID, friend requests, remarks/nicknames
-- [ ] Group chat: roles, permissions, `@` mentions, mute/kick/invite
-- [ ] Search: type (wildcards), time range, content; sorting & jump-to-message
-- [ ] Block list for direct chats
-- [ ] Redis integration + clustering
-- [ ] MySQL primary/replica + failover
-- [ ] Plugin system (language packs, extensions)
-- [ ] Hardening: observability, rate limiting, load testing
+- [x] Project scaffolding (backend workspace, web, android)
+- [x] Authentication: ID login, password verification, sessions, multi-device
+- [x] Direct messaging: text + file transfer, offline queue
+- [x] Contact system: add by ID, friend requests, remarks/nicknames
+- [x] Group chat: roles, permissions, `@` mentions, mute/kick/invite
+- [x] Search: type (wildcards), time range, content; sorting & jump-to-message
+- [x] Block list for direct chats
+- [x] Redis integration (cache, presence, registry, rate limits, fan-out)
+- [ ] Redis clustering
+- [x] MySQL primary/replica read routing
+- [ ] Automatic MySQL failover and replica health ejection
+- [x] Plugin system (client language packs/themes, server plugins)
+- [x] Observability (structured tracing) and rate limiting
+- [ ] Load testing and capacity tuning
 
 ---
 
