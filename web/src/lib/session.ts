@@ -4,6 +4,7 @@ export interface User {
 	id: number;
 	user_id: string;
 	display_name?: string | null;
+	avatar_url?: string | null;
 }
 
 export interface Session {

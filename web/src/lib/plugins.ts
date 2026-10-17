@@ -258,6 +258,30 @@ export function clearPlugins(): void {
 	installedPlugins.set([]);
 }
 
+/**
+ * Move per-user local data when the account changes its custom user ID.
+ *
+ * Plugins, the active language, and the active theme are keyed by the public
+ * user ID in localStorage, so an ID change must carry those preferences over.
+ */
+export function migrateUserStorage(oldUserId: string, newUserId: string): void {
+	if (!storageAvailable() || oldUserId === newUserId) return;
+	for (const key of [pluginsKey, localeKey, themeKey]) {
+		try {
+			const from = key(oldUserId);
+			const to = key(newUserId);
+			const value = localStorage.getItem(from);
+			if (value !== null && localStorage.getItem(to) === null) {
+				localStorage.setItem(to, value);
+			}
+			localStorage.removeItem(from);
+		} catch {
+			// Preference migration is best-effort.
+		}
+	}
+	if (loadedUserId === oldUserId) loadedUserId = newUserId;
+}
+
 /** Install or replace a plugin for `userId`; returns the parsed package. */
 export function installPlugin(userId: string, text: string): PluginPackage {
 	const plugin = parsePlugin(text);

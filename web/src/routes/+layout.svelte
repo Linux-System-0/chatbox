@@ -2,13 +2,16 @@
 	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import Avatar from '$lib/Avatar.svelte';
 	import PluginManager from '$lib/PluginManager.svelte';
+	import ProfileDialog from '$lib/ProfileDialog.svelte';
 	import { locale, languages, resetLocale, setLocale, syncLocale, translator } from '$lib/i18n';
 	import { applyTheme, resetTheme, setTheme, syncTheme, theme, themes } from '$lib/theme';
 	import { clearPlugins, loadPluginsFor } from '$lib/plugins';
 	import { clearSession, loadSession, session } from '$lib/session';
 
 	let showPlugins = false;
+	let showProfile = false;
 	let loadedUserId: string | null = null;
 
 	onMount(() => {
@@ -24,7 +27,6 @@
 
 	$: tr = $translator;
 	$: profileName = $session?.user.display_name || $session?.user.user_id || '';
-	$: initial = profileName.trim().slice(0, 1).toUpperCase() || '?';
 	$: {
 		const userId = $session?.user.user_id ?? null;
 		if (userId !== loadedUserId) {
@@ -104,9 +106,21 @@
 			>
 				🧩 <span class="plugin-label">{tr('plugins')}</span>
 			</button>
-			<div class="user" title={profileName}>
-				<span class="avatar" aria-hidden="true">{initial}</span>
-				<span class="username">{profileName}</span>
+			<div class="user-wrap">
+				<button
+					class="user"
+					on:click={() => (showProfile = true)}
+					title={tr('edit_profile')}
+					aria-label={tr('edit_profile')}
+				>
+					<Avatar
+						src={$session.user.avatar_url}
+						name={profileName}
+						id={$session.user.id}
+						size="sm"
+					/>
+					<span class="username">{profileName}</span>
+				</button>
 			</div>
 			<button class="ghost logout" on:click={logout} aria-label={tr('logout')} title={tr('logout')}>
 				<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -123,6 +137,10 @@
 
 	{#if showPlugins && $session}
 		<PluginManager userId={$session.user.user_id} onClose={() => (showPlugins = false)} />
+	{/if}
+
+	{#if showProfile && $session}
+		<ProfileDialog onClose={() => (showProfile = false)} />
 	{/if}
 </div>
 
@@ -293,8 +311,13 @@
 		padding: 0.25rem 0.6rem 0.25rem 0.25rem;
 		border-radius: 999px;
 		background: var(--surface-2);
+		color: var(--text);
 		border: 1px solid var(--border);
 		max-width: 14rem;
+		font-weight: 400;
+	}
+	.user:hover:not(:disabled) {
+		background: var(--surface-3);
 	}
 	.logout {
 		display: inline-flex;
@@ -307,18 +330,6 @@
 		align-items: center;
 		gap: 0.35rem;
 		white-space: nowrap;
-	}
-	.avatar {
-		display: grid;
-		place-items: center;
-		width: 1.7rem;
-		height: 1.7rem;
-		border-radius: 50%;
-		background: linear-gradient(135deg, var(--accent), #8b5cf6);
-		color: #fff;
-		font-size: 0.8rem;
-		font-weight: 700;
-		flex: none;
 	}
 	.username {
 		font-size: 0.85rem;
@@ -373,7 +384,7 @@
 		}
 		.brand-name,
 		.username,
-		.user {
+		.user-wrap {
 			display: none;
 		}
 		.plugin-label {

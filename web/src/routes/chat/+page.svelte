@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { deleteJson, getJson, postJson } from '$lib/api';
+	import Avatar from '$lib/Avatar.svelte';
+	import { deleteJson, getJson, patchJson, postJson } from '$lib/api';
+	import { effectiveAvatar, effectiveName, fileToAvatar } from '$lib/avatar';
 	import { translator } from '$lib/i18n';
 	import { loadSession, session, type User } from '$lib/session';
 	import { ChatSocket, type ChatMessage, type ConnectionStatus, type ServerFrame } from '$lib/ws';
@@ -10,6 +12,10 @@
 		id: number;
 		kind: 'direct' | 'group';
 		title: string;
+		avatar_url?: string | null;
+		peer_id?: number | null;
+		group_id?: number | null;
+		member_count: number;
 		last_message: ChatMessage | null;
 		last_read_seq: number;
 		unread: number;
@@ -17,6 +23,7 @@
 	interface ContactView {
 		user: User;
 		remark: string | null;
+		remark_avatar_url: string | null;
 		created_at: string;
 	}
 	interface BlockView {
@@ -29,6 +36,27 @@
 		to_id: number;
 		status: string;
 		message: string | null;
+		created_at: string;
+		from_user: User | null;
+		to_user: User | null;
+	}
+	interface GroupMemberView {
+		user: User;
+		role: 'owner' | 'admin' | 'member';
+		muted_until: string | null;
+		joined_at: string;
+	}
+	interface GroupInfo {
+		id: number;
+		conversation_id: number;
+		name: string;
+		owner_id: number;
+		invite_policy: 'owner' | 'admin' | 'member';
+		created_at: string;
+	}
+	interface GroupView {
+		group: GroupInfo;
+		members: GroupMemberView[];
 	}
 	interface MessageItem {
 		message: ChatMessage;
@@ -36,6 +64,10 @@
 		head: boolean;
 		tail: boolean;
 		day: string | null;
+	}
+	interface PresenceEntry {
+		user_id: number;
+		online: boolean;
 	}
 
 	$: tr = $translator;
@@ -45,6 +77,7 @@
 	let requests: FriendRequest[] = [];
 	let blocks: BlockView[] = [];
 	let messages: ChatMessage[] = [];
+	let presence: Record<number, boolean> = {};
 	let selected: number | null = null;
 	let draft = '';
 	let searchQuery = '';
@@ -59,9 +92,37 @@
 	let messagePane: HTMLDivElement | null = null;
 	let composerEl: HTMLTextAreaElement | null = null;
 
+	let contactEditor: ContactView | null = null;
+	let contactRemark = '';
+	let contactAvatar = '';
+	let contactBusy = false;
+	let contactError = '';
+
+	let showNewGroup = false;
+	let groupName = '';
+	let groupSelection: number[] = [];
+	let groupBusy = false;
+	let groupError = '';
+
+	let showGroupInfo = false;
+	let groupInfo: GroupView | null = null;
+	let groupRename = '';
+	let groupAddSelection: number[] = [];
+	let groupActionError = '';
+
+	$: myId = $session?.user.id;
 	$: selectedConversation = conversations.find((c) => c.id === selected) ?? null;
 	$: pendingRequests = requests.filter((r) => r.status === 'pending');
-	$: messageItems = buildMessageItems(messages, $session?.user.id, tr);
+	$: incomingRequests = pendingRequests.filter((r) => r.to_id === myId);
+	$: outgoingRequests = pendingRequests.filter((r) => r.from_id === myId);
+	$: messageItems = buildMessageItems(messages, myId, tr);
+	$: myGroupMember = groupInfo?.members.find((member) => member.user.id === myId) ?? null;
+	$: canManageGroup =
+		myGroupMember?.role === 'owner' || myGroupMember?.role === 'admin';
+	$: isGroupOwner = myGroupMember?.role === 'owner';
+	$: groupAddable = contacts.filter(
+		(contact) => !groupInfo?.members.some((member) => member.user.id === contact.user.id)
+	);
 
 	onMount(async () => {
 		const current = loadSession();
@@ -135,14 +196,6 @@
 		return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	}
 
-	function initialOf(value: string): string {
-		return value.trim().slice(0, 1).toUpperCase() || '#';
-	}
-
-	function hueOf(id: number): number {
-		return (id * 47) % 360;
-	}
-
 	function previewOf(conversation: ConversationView): string {
 		const message = conversation.last_message;
 		return message ? contentOf(message) : '';
@@ -151,6 +204,43 @@
 	function contentOf(message: ChatMessage): string {
 		return message.content ?? (message.kind === 'file' ? tr('file') : `[${message.kind}]`);
 	}
+
+	function identityFor(userId: number): { name: string; avatar: string | null } {
+		const contact = contacts.find((item) => item.user.id === userId);
+		if (contact) {
+			return {
+				name: effectiveName(contact.remark, contact.user.display_name, contact.user.user_id),
+				avatar: effectiveAvatar(contact.remark_avatar_url, contact.user.avatar_url)
+			};
+		}
+		const member = groupInfo?.members.find((item) => item.user.id === userId);
+		if (member) {
+			return {
+				name: effectiveName(null, member.user.display_name, member.user.user_id),
+				avatar: effectiveAvatar(null, member.user.avatar_url)
+			};
+		}
+		if ($session?.user.id === userId) {
+			return {
+				name: effectiveName(null, $session.user.display_name, $session.user.user_id),
+				avatar: effectiveAvatar(null, $session.user.avatar_url)
+			};
+		}
+		return { name: `#${userId}`, avatar: null };
+	}
+
+	function isOnline(userId: number | null | undefined): boolean {
+		return userId !== null && userId !== undefined && presence[userId] === true;
+	}
+
+	$: toolbarStatus =
+		selectedConversation?.kind === 'direct' && selectedConversation.peer_id
+			? status === 'online'
+				? presence[selectedConversation.peer_id]
+					? 'online'
+					: 'offline'
+				: status
+			: '';
 
 	function autoGrow(node: HTMLTextAreaElement) {
 		const resize = () => {
@@ -180,8 +270,33 @@
 			contacts = contactList.contacts;
 			blocks = blockList.blocks;
 			requests = requestList.requests;
+			await refreshPresence();
+			if (selected !== null) {
+				const conversation = conversations.find((item) => item.id === selected);
+				if (conversation?.kind === 'group') await loadGroupInfo(conversation);
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'failed to load';
+		}
+	}
+
+	async function refreshPresence() {
+		const ids = new Set<number>();
+		for (const contact of contacts) ids.add(contact.user.id);
+		for (const conversation of conversations) {
+			if (conversation.peer_id) ids.add(conversation.peer_id);
+		}
+		for (const member of groupInfo?.members ?? []) ids.add(member.user.id);
+		if (ids.size === 0) return;
+		try {
+			const response = await getJson<{ presence: PresenceEntry[] }>(
+				`/presence?user_ids=${[...ids].join(',')}`
+			);
+			const next: Record<number, boolean> = { ...presence };
+			for (const entry of response.presence) next[entry.user_id] = entry.online;
+			presence = next;
+		} catch {
+			// Presence is auxiliary; a failure must not break the workspace.
 		}
 	}
 
@@ -197,6 +312,14 @@
 			await postJson(`/conversations/${id}/read`, { seq: messages.at(-1)?.seq ?? 0 });
 			const conv = conversations.find((c) => c.id === id);
 			if (conv) conv.unread = 0;
+			if (conv?.kind === 'group') {
+				await loadGroupInfo(conv);
+				showGroupInfo = false;
+			} else {
+				groupInfo = null;
+				showGroupInfo = false;
+			}
+			await refreshPresence();
 			await scrollToBottom();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'failed to load messages';
@@ -220,6 +343,8 @@
 			if (frame.conversation_id === selected) {
 				selectConversation(frame.conversation_id);
 			}
+		} else if (frame.type === 'presence') {
+			presence = { ...presence, [frame.user_id]: frame.online };
 		} else if (frame.type === 'error') {
 			error = frame.message;
 		}
@@ -240,11 +365,18 @@
 	}
 
 	async function startDirect() {
-		const other = newDirect.trim();
-		if (!other) return;
+		const contact = contacts.find((item) => item.user.user_id === newDirect);
+		if (!contact) {
+			error = tr('contact_only_hint');
+			return;
+		}
+		await chatWith(contact);
+	}
+
+	async function chatWith(contact: ContactView) {
 		try {
 			const response = await postJson<{ conversation: { id: number } }>('/conversations/direct', {
-				user_id: other
+				user_id: contact.user.user_id
 			});
 			newDirect = '';
 			await refreshAll();
@@ -288,20 +420,242 @@
 	}
 
 	async function acceptRequest(id: number) {
-		await postJson(`/contacts/requests/${id}/accept`);
-		await refreshAll();
+		try {
+			await postJson(`/contacts/requests/${id}/accept`);
+			await refreshAll();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'failed to accept request';
+		}
+	}
+
+	async function rejectRequest(id: number) {
+		try {
+			await postJson(`/contacts/requests/${id}/reject`);
+			await refreshAll();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'failed to reject request';
+		}
 	}
 
 	async function blockUser(user: string) {
 		const id = user.trim();
 		if (!id) return;
-		await postJson(`/blocks/${id}`);
-		await refreshAll();
+		try {
+			await postJson(`/blocks/${encodeURIComponent(id)}`);
+			await refreshAll();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'failed to block user';
+		}
 	}
 
 	async function unblock(user_id: string) {
-		await deleteJson(`/blocks/${user_id}`);
-		await refreshAll();
+		try {
+			await deleteJson(`/blocks/${encodeURIComponent(user_id)}`);
+			await refreshAll();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'failed to unblock user';
+		}
+	}
+
+	function openContactEditor(contact: ContactView) {
+		contactEditor = contact;
+		contactRemark = contact.remark ?? '';
+		contactAvatar = contact.remark_avatar_url ?? '';
+		contactError = '';
+	}
+
+	async function chooseContactAvatar(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		contactBusy = true;
+		contactError = '';
+		try {
+			contactAvatar = await fileToAvatar(file);
+		} catch {
+			contactError = tr('avatar_error');
+		} finally {
+			contactBusy = false;
+			input.value = '';
+		}
+	}
+
+	async function saveContactEditor() {
+		if (!contactEditor) return;
+		contactBusy = true;
+		contactError = '';
+		try {
+			await patchJson(`/contacts/${encodeURIComponent(contactEditor.user.user_id)}`, {
+				remark: contactRemark.trim() || null,
+				remark_avatar_url: contactAvatar || null
+			});
+			contactEditor = null;
+			await refreshAll();
+		} catch (e) {
+			contactError = e instanceof Error ? e.message : 'failed to update contact';
+		} finally {
+			contactBusy = false;
+		}
+	}
+
+	function openNewGroup() {
+		showNewGroup = true;
+		groupName = '';
+		groupSelection = [];
+		groupError = '';
+	}
+
+	function toggleGroupSelection(userId: number) {
+		groupSelection = groupSelection.includes(userId)
+			? groupSelection.filter((id) => id !== userId)
+			: [...groupSelection, userId];
+	}
+
+	async function createGroup() {
+		const name = groupName.trim();
+		if (!name) {
+			groupError = tr('group_name');
+			return;
+		}
+		if (groupSelection.length === 0) {
+			groupError = tr('no_contacts_selected');
+			return;
+		}
+		groupBusy = true;
+		groupError = '';
+		try {
+			const members = contacts
+				.filter((contact) => groupSelection.includes(contact.user.id))
+				.map((contact) => contact.user.user_id);
+			const response = await postJson<{ group: GroupView }>('/groups', { name, members });
+			showNewGroup = false;
+			groupInfo = response.group;
+			await refreshAll();
+			await selectConversation(response.group.group.conversation_id);
+			showGroupInfo = true;
+		} catch (e) {
+			groupError = e instanceof Error ? e.message : tr('group_error');
+		} finally {
+			groupBusy = false;
+		}
+	}
+
+	async function loadGroupInfo(conversation: ConversationView) {
+		if (!conversation.group_id) {
+			groupInfo = null;
+			return;
+		}
+		try {
+			const response = await getJson<{ group: GroupView }>(
+				`/groups/${conversation.group_id}`
+			);
+			groupInfo = response.group;
+			groupRename = response.group.group.name;
+			groupAddSelection = [];
+			groupActionError = '';
+		} catch (e) {
+			groupInfo = null;
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function openGroupInfo() {
+		if (!selectedConversation) return;
+		await loadGroupInfo(selectedConversation);
+		showGroupInfo = true;
+		await refreshPresence();
+	}
+
+	async function renameGroup() {
+		if (!groupInfo) return;
+		const name = groupRename.trim();
+		if (!name) return;
+		try {
+			await patchJson(`/groups/${groupInfo.group.id}`, { name });
+			await loadGroupInfo(selectedConversation as ConversationView);
+			await refreshAll();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function addGroupMembers() {
+		if (!groupInfo || groupAddSelection.length === 0) return;
+		try {
+			const members = contacts
+				.filter((contact) => groupAddSelection.includes(contact.user.id))
+				.map((contact) => contact.user.user_id);
+			await postJson(`/groups/${groupInfo.group.id}/members`, { members });
+			await loadGroupInfo(selectedConversation as ConversationView);
+			await refreshAll();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function kickGroupMember(user: User) {
+		if (!groupInfo) return;
+		try {
+			await deleteJson(`/groups/${groupInfo.group.id}/members/${encodeURIComponent(user.user_id)}`);
+			await loadGroupInfo(selectedConversation as ConversationView);
+			await refreshAll();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function toggleMute(member: GroupMemberView) {
+		if (!groupInfo) return;
+		try {
+			const muted = member.muted_until ? new Date(member.muted_until).getTime() > Date.now() : false;
+			await postJson(
+				`/groups/${groupInfo.group.id}/members/${encodeURIComponent(member.user.user_id)}/mute`,
+				{ minutes: muted ? null : 60 }
+			);
+			await loadGroupInfo(selectedConversation as ConversationView);
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function leaveGroup() {
+		if (!groupInfo) return;
+		if (!confirm(tr('confirm_leave_group'))) return;
+		try {
+			await postJson(`/groups/${groupInfo.group.id}/leave`);
+			closeGroup();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function dissolveGroup() {
+		if (!groupInfo) return;
+		if (!confirm(tr('confirm_dissolve_group'))) return;
+		try {
+			await deleteJson(`/groups/${groupInfo.group.id}`);
+			closeGroup();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	function closeGroup() {
+		showGroupInfo = false;
+		groupInfo = null;
+		selected = null;
+		messages = [];
+		refreshAll();
+	}
+
+	function roleLabel(role: GroupMemberView['role']): string {
+		return tr(role);
+	}
+
+	function toggleGroupAdd(userId: number) {
+		groupAddSelection = groupAddSelection.includes(userId)
+			? groupAddSelection.filter((id) => id !== userId)
+			: [...groupAddSelection, userId];
 	}
 
 	async function scrollToBottom() {
@@ -340,16 +694,29 @@
 
 		<div class="side-body">
 			{#if sidebarTab === 'chats'}
-				<form class="new-row" on:submit|preventDefault={startDirect}>
-					<input
-						placeholder={tr('user_id')}
-						aria-label={tr('new_conversation')}
-						bind:value={newDirect}
-					/>
-					<button type="submit" title={tr('new_conversation')} aria-label={tr('new_conversation')}
-						>+</button
+				<div class="new-row">
+					<select bind:value={newDirect} aria-label={tr('select_contact')}>
+						<option value="">{tr('select_contact')}</option>
+						{#each contacts as contact (contact.user.id)}
+							<option value={contact.user.user_id}>
+								{effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}
+							</option>
+						{/each}
+					</select>
+					<button
+						type="button"
+						on:click={startDirect}
+						title={tr('start_chat')}
+						aria-label={tr('start_chat')}>+</button
 					>
-				</form>
+					<button
+						type="button"
+						class="ghost"
+						on:click={openNewGroup}
+						title={tr('new_group')}
+						aria-label={tr('new_group')}>👥</button
+					>
+				</div>
 				{#if conversations.length === 0}
 					<p class="empty">{tr('no_conversations')}</p>
 				{:else}
@@ -361,11 +728,11 @@
 									class:selected={conversation.id === selected}
 									on:click={() => selectConversation(conversation.id)}
 								>
-									<span
-										class="row-avatar"
-										style="--hue: {hueOf(conversation.id)}"
-										aria-hidden="true">{initialOf(conversation.title)}</span
-									>
+									<Avatar
+										src={conversation.avatar_url}
+										name={conversation.title}
+										id={conversation.peer_id ?? conversation.id}
+									/>
 									<span class="row-main">
 										<span class="row-top">
 											<span class="row-title">{conversation.title}</span>
@@ -395,16 +762,63 @@
 					<button type="submit" title={tr('add_contact')} aria-label={tr('add_contact')}>+</button>
 				</form>
 
-				{#if pendingRequests.length > 0}
-					<h2>{tr('requests')}</h2>
+				{#if incomingRequests.length > 0}
+					<h2>{tr('incoming_requests')}</h2>
 					<ul class="list">
-						{#each pendingRequests as request (request.id)}
+						{#each incomingRequests as request (request.id)}
 							<li class="contact-row">
-								<span class="row-avatar small-avatar" style="--hue: {hueOf(request.from_id)}" aria-hidden="true"
-									>{initialOf(String(request.from_id))}</span
-								>
-								<span class="contact-name">#{request.from_id}</span>
+								<Avatar
+									src={request.from_user?.avatar_url}
+									name={effectiveName(
+										null,
+										request.from_user?.display_name,
+										request.from_user?.user_id ?? String(request.from_id)
+									)}
+									id={request.from_id}
+									size="sm"
+								/>
+								<span class="contact-main">
+									<span class="contact-name">
+										{effectiveName(
+											null,
+											request.from_user?.display_name,
+											request.from_user?.user_id ?? `#${request.from_id}`
+										)}
+									</span>
+									{#if request.message}<span class="contact-note">{request.message}</span>{/if}
+								</span>
 								<button class="chip" on:click={() => acceptRequest(request.id)}>{tr('accept')}</button>
+								<button class="chip subtle" on:click={() => rejectRequest(request.id)}
+									>{tr('reject')}</button
+								>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				{#if outgoingRequests.length > 0}
+					<h2>{tr('outgoing_requests')}</h2>
+					<ul class="list">
+						{#each outgoingRequests as request (request.id)}
+							<li class="contact-row">
+								<Avatar
+									src={request.to_user?.avatar_url}
+									name={effectiveName(
+										null,
+										request.to_user?.display_name,
+										request.to_user?.user_id ?? String(request.to_id)
+									)}
+									id={request.to_id}
+									size="sm"
+								/>
+								<span class="contact-name">
+									{effectiveName(
+										null,
+										request.to_user?.display_name,
+										request.to_user?.user_id ?? `#${request.to_id}`
+									)}
+								</span>
+								<span class="chip subtle pending-chip">{tr('pending')}</span>
 							</li>
 						{/each}
 					</ul>
@@ -417,12 +831,34 @@
 					<ul class="list">
 						{#each contacts as contact (contact.user.id)}
 							<li class="contact-row">
+								<Avatar
+									src={effectiveAvatar(contact.remark_avatar_url, contact.user.avatar_url)}
+									name={effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}
+									id={contact.user.id}
+									size="sm"
+								/>
+								<span class="contact-main">
+									<span class="contact-name">
+										{effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}
+									</span>
+									<span class="contact-note">@{contact.user.user_id}</span>
+								</span>
 								<span
-									class="row-avatar small-avatar"
-									style="--hue: {hueOf(contact.user.id)}"
-									aria-hidden="true">{initialOf(contact.user.user_id)}</span
+									class="online-dot"
+									class:on={isOnline(contact.user.id)}
+									title={isOnline(contact.user.id) ? tr('online') : tr('offline')}
+									aria-label={isOnline(contact.user.id) ? tr('online') : tr('offline')}
+								></span>
+								<button
+									class="chip"
+									title={tr('chat')}
+									on:click={() => chatWith(contact)}>{tr('chat')}</button
 								>
-								<span class="contact-name">{contact.remark ?? contact.user.display_name ?? contact.user.user_id}</span>
+								<button
+									class="chip subtle"
+									title={tr('edit_contact')}
+									on:click={() => openContactEditor(contact)}>✎</button
+								>
 								<button
 									class="chip subtle"
 									title={tr('block')}
@@ -438,10 +874,19 @@
 					<ul class="list">
 						{#each blocks as block (block.user.id)}
 							<li class="contact-row">
-								<span class="row-avatar small-avatar muted-avatar" aria-hidden="true"
-									>{initialOf(block.user.user_id)}</span
-								>
-								<span class="contact-name">{block.user.user_id}</span>
+								<Avatar
+									src={block.user.avatar_url}
+									name={effectiveName(null, block.user.display_name, block.user.user_id)}
+									id={block.user.id}
+									size="sm"
+									muted
+								/>
+								<span class="contact-main">
+									<span class="contact-name">
+										{effectiveName(null, block.user.display_name, block.user.user_id)}
+									</span>
+									<span class="contact-note">@{block.user.user_id}</span>
+								</span>
 								<button class="chip subtle" on:click={() => unblock(block.user.user_id)}
 									>{tr('unblock')}</button
 								>
@@ -461,18 +906,27 @@
 				</svg>
 			</button>
 			{#if selectedConversation}
-				<span
-					class="toolbar-avatar"
-					style="--hue: {hueOf(selectedConversation.id)}"
-					aria-hidden="true">{initialOf(selectedConversation.title)}</span
-				>
+				<Avatar
+					src={selectedConversation.avatar_url}
+					name={selectedConversation.title}
+					id={selectedConversation.peer_id ?? selectedConversation.id}
+				/>
 				<div class="toolbar-title">
 					<strong>{selectedConversation.title}</strong>
-					<span class="status-pill {status}">
-						<i class="status-dot"></i>
-						{tr(status)}
-					</span>
+					{#if selectedConversation.kind === 'group'}
+						<button class="group-meta" on:click={openGroupInfo}>
+							{selectedConversation.member_count} {tr('members')}
+						</button>
+					{:else}
+						<span class="status-pill {toolbarStatus}">
+							<i class="status-dot"></i>
+							{tr(toolbarStatus)}
+						</span>
+					{/if}
 				</div>
+				{#if selectedConversation.kind === 'group'}
+					<button class="ghost info-btn" on:click={openGroupInfo}>{tr('group_info')}</button>
+				{/if}
 			{:else}
 				<strong class="toolbar-placeholder">ChatBox</strong>
 			{/if}
@@ -538,18 +992,19 @@
 				{:else}
 					<div class="line" class:mine={item.mine} class:head={item.head} class:tail={item.tail}>
 						{#if !item.mine}
-							<span
-								class="msg-avatar"
-								class:invisible={!item.head}
-								style="--hue: {hueOf(item.message.sender_id)}"
-								aria-hidden="true">
-								<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-									<circle cx="12" cy="8" r="4" />
-									<path d="M4 20a8 8 0 0 1 16 0z" />
-								</svg>
+							<span class="msg-avatar-slot" class:invisible={!item.head}>
+								<Avatar
+									src={identityFor(item.message.sender_id).avatar}
+									name={identityFor(item.message.sender_id).name}
+									id={item.message.sender_id}
+									size="sm"
+								/>
 							</span>
 						{/if}
 						<div class="bubble">
+							{#if selectedConversation?.kind === 'group' && !item.mine && item.head}
+								<span class="sender">{identityFor(item.message.sender_id).name}</span>
+							{/if}
 							<span class="content">{contentOf(item.message)}</span>
 							{#if item.tail}
 								<span class="time">{shortTime(item.message.created_at)}</span>
@@ -586,6 +1041,216 @@
 		{/if}
 	</section>
 </div>
+
+
+{#if contactEditor}
+	<div class="overlay" role="presentation">
+		<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="contact-editor-title">
+			<header>
+				<h2 id="contact-editor-title">{tr('edit_contact')}</h2>
+				<button class="ghost close" on:click={() => (contactEditor = null)} aria-label={tr('close')}
+					>×</button
+				>
+			</header>
+
+			<div class="avatar-row">
+				<Avatar
+					src={contactAvatar || contactEditor.user.avatar_url}
+					name={effectiveName(
+						contactRemark,
+						contactEditor.user.display_name,
+						contactEditor.user.user_id
+					)}
+					id={contactEditor.user.id}
+					size="lg"
+				/>
+				<div class="avatar-actions">
+					<label class="upload">
+						<span>{tr('remark_avatar')}</span>
+						<input type="file" accept="image/*" on:change={chooseContactAvatar} disabled={contactBusy} />
+					</label>
+					{#if contactAvatar}
+						<button type="button" class="ghost" on:click={() => (contactAvatar = '')}
+							>{tr('remove_avatar')}</button
+						>
+					{/if}
+				</div>
+			</div>
+
+			<label class="field">
+				<span>{tr('remark')}</span>
+				<input bind:value={contactRemark} maxlength="64" placeholder={tr('remark')} />
+			</label>
+			<p class="hint">@{contactEditor.user.user_id}</p>
+
+			{#if contactError}<p class="err" role="alert">{contactError}</p>{/if}
+
+			<div class="actions">
+				<button type="button" class="ghost" on:click={() => (contactEditor = null)}>{tr('cancel')}</button>
+				<button type="button" on:click={saveContactEditor} disabled={contactBusy}>
+					{contactBusy ? '…' : tr('save')}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showNewGroup}
+	<div class="overlay" role="presentation">
+		<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-group-title">
+			<header>
+				<h2 id="new-group-title">{tr('new_group')}</h2>
+				<button class="ghost close" on:click={() => (showNewGroup = false)} aria-label={tr('close')}
+					>×</button
+				>
+			</header>
+
+			<label class="field">
+				<span>{tr('group_name')}</span>
+				<input bind:value={groupName} maxlength="64" placeholder={tr('group_name')} />
+			</label>
+
+			<h3>{tr('select_contacts')}</h3>
+			{#if contacts.length === 0}
+				<p class="empty">{tr('no_contacts')}</p>
+			{:else}
+				<ul class="check-list">
+					{#each contacts as contact (contact.user.id)}
+						<li>
+							<label>
+								<input
+									type="checkbox"
+									checked={groupSelection.includes(contact.user.id)}
+									on:change={() => toggleGroupSelection(contact.user.id)}
+								/>
+								<Avatar
+									src={effectiveAvatar(contact.remark_avatar_url, contact.user.avatar_url)}
+									name={effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}
+									id={contact.user.id}
+									size="sm"
+								/>
+								<span>{effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}</span>
+							</label>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			{#if groupError}<p class="err" role="alert">{groupError}</p>{/if}
+
+			<div class="actions">
+				<button type="button" class="ghost" on:click={() => (showNewGroup = false)}>{tr('cancel')}</button>
+				<button type="button" on:click={createGroup} disabled={groupBusy}>
+					{groupBusy ? '…' : tr('create_group')}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showGroupInfo && groupInfo}
+	<div class="overlay" role="presentation">
+		<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="group-info-title">
+			<header>
+				<Avatar src={null} name={groupInfo.group.name} id={groupInfo.group.id} />
+				<h2 id="group-info-title">{groupInfo.group.name}</h2>
+				<button class="ghost close" on:click={() => (showGroupInfo = false)} aria-label={tr('close')}
+					>×</button
+				>
+			</header>
+
+			{#if groupActionError}<p class="err" role="alert">{groupActionError}</p>{/if}
+
+			{#if canManageGroup}
+				<div class="inline-form">
+					<input bind:value={groupRename} maxlength="64" aria-label={tr('group_name')} />
+					<button type="button" on:click={renameGroup}>{tr('rename_group')}</button>
+				</div>
+			{/if}
+
+			<h3>{tr('members')}</h3>
+			<ul class="member-list">
+				{#each groupInfo.members as member (member.user.id)}
+					<li>
+						<Avatar
+							src={identityFor(member.user.id).avatar}
+							name={identityFor(member.user.id).name}
+							id={member.user.id}
+							size="sm"
+						/>
+						<span class="contact-main">
+							<span class="contact-name">
+								{identityFor(member.user.id).name}
+								{#if member.user.id === myId}<span class="muted-label">({tr('you')})</span>{/if}
+							</span>
+							<span class="contact-note">
+								{roleLabel(member.role)}
+								{#if member.muted_until && new Date(member.muted_until).getTime() > Date.now()}
+									· {tr('mute')}
+								{/if}
+							</span>
+						</span>
+						<span
+							class="online-dot"
+							class:on={isOnline(member.user.id)}
+							title={isOnline(member.user.id) ? tr('online') : tr('offline')}
+						></span>
+						{#if canManageGroup && member.role !== 'owner' && member.user.id !== myId && (isGroupOwner || member.role === 'member')}
+							<button class="chip subtle" on:click={() => toggleMute(member)}>
+								{member.muted_until && new Date(member.muted_until).getTime() > Date.now()
+									? tr('unmute')
+									: tr('mute')}
+							</button>
+							<button class="chip subtle" on:click={() => kickGroupMember(member.user)}>{tr('kick')}</button>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+
+			{#if canManageGroup && groupAddable.length > 0}
+				<h3>{tr('add_members')}</h3>
+				<ul class="check-list">
+					{#each groupAddable as contact (contact.user.id)}
+						<li>
+							<label>
+								<input
+									type="checkbox"
+									checked={groupAddSelection.includes(contact.user.id)}
+									on:change={() => toggleGroupAdd(contact.user.id)}
+								/>
+								<Avatar
+									src={effectiveAvatar(contact.remark_avatar_url, contact.user.avatar_url)}
+									name={effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}
+									id={contact.user.id}
+									size="sm"
+								/>
+								<span>{effectiveName(contact.remark, contact.user.display_name, contact.user.user_id)}</span>
+							</label>
+						</li>
+					{/each}
+				</ul>
+				<div class="actions">
+					<button
+						type="button"
+						on:click={addGroupMembers}
+						disabled={groupAddSelection.length === 0}>{tr('add_members')}</button
+					>
+				</div>
+			{/if}
+
+			<div class="actions split">
+				{#if !isGroupOwner || groupInfo.members.length === 1}
+					<button type="button" class="ghost" on:click={leaveGroup}>{tr('leave_group')}</button>
+				{:else}
+					<span></span>
+				{/if}
+				{#if isGroupOwner}
+					<button type="button" class="danger" on:click={dissolveGroup}>{tr('dissolve_group')}</button>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.chat {
@@ -1201,4 +1866,258 @@
 			display: none;
 		}
 	}
+
+	.new-row select {
+		flex: 1;
+		min-width: 0;
+		padding: 0.5rem 0.65rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.9rem;
+	}
+	.contact-main {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.05rem;
+	}
+	.contact-note {
+		font-size: 0.72rem;
+		color: var(--muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.contact-row .chip {
+		padding: 0.2rem 0.5rem;
+	}
+	.pending-chip {
+		pointer-events: none;
+		opacity: 0.8;
+	}
+	.online-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		flex: none;
+		border-radius: 50%;
+		background: var(--muted);
+		opacity: 0.5;
+	}
+	.online-dot.on {
+		background: var(--success);
+		opacity: 1;
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+	}
+	.group-meta {
+		align-self: flex-start;
+		background: transparent;
+		color: var(--muted);
+		padding: 0;
+		font-size: 0.72rem;
+		font-weight: 400;
+		border-radius: 0;
+	}
+	.group-meta:hover:not(:disabled) {
+		background: transparent;
+		color: var(--text);
+		text-decoration: underline;
+	}
+	.info-btn {
+		margin-left: auto;
+		padding: 0.35rem 0.6rem;
+		font-size: 0.78rem;
+	}
+	.msg-avatar-slot {
+		flex: none;
+		margin-bottom: 0.15rem;
+	}
+	.msg-avatar-slot.invisible {
+		visibility: hidden;
+	}
+	.sender {
+		display: block;
+		margin-bottom: 0.15rem;
+		font-size: 0.72rem;
+		font-weight: 700;
+		color: var(--accent);
+	}
+	.overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(8, 10, 16, 0.55);
+		display: grid;
+		place-items: center;
+		padding: 1rem;
+		z-index: 65;
+	}
+	.dialog {
+		width: min(32rem, 100%);
+		max-height: min(85vh, 44rem);
+		overflow: auto;
+		background: var(--surface);
+		color: var(--text);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-md);
+		padding: 1.1rem 1.2rem 1.3rem;
+	}
+	.dialog.wide {
+		width: min(38rem, 100%);
+	}
+	.dialog header {
+		display: flex;
+		align-items: center;
+		gap: 0.65rem;
+	}
+	.dialog h2 {
+		margin: 0;
+		font-size: 1.02rem;
+		flex: 1;
+	}
+	.dialog h3 {
+		margin: 1rem 0 0.45rem;
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+	}
+	.dialog .close {
+		padding: 0.25rem 0.55rem;
+		font-size: 1.1rem;
+		line-height: 1;
+	}
+	.avatar-row {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		margin: 1rem 0;
+	}
+	.avatar-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+	}
+	.upload {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.45rem 0.8rem;
+		border-radius: var(--radius-sm);
+		background: var(--accent);
+		color: var(--accent-contrast);
+		font-weight: 600;
+		font-size: 0.82rem;
+		cursor: pointer;
+	}
+	.upload input {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
+	}
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		margin-bottom: 0.8rem;
+		font-size: 0.82rem;
+		font-weight: 600;
+	}
+	.field input {
+		width: 100%;
+	}
+	.hint {
+		margin: -0.3rem 0 0.8rem;
+		font-size: 0.76rem;
+		color: var(--muted);
+	}
+	.inline-form {
+		display: flex;
+		gap: 0.45rem;
+		margin: 0.8rem 0 0.2rem;
+	}
+	.inline-form input {
+		flex: 1;
+		min-width: 0;
+	}
+	.check-list,
+	.member-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.check-list li label {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.35rem 0.45rem;
+		border-radius: var(--radius-sm);
+		font-size: 0.86rem;
+		cursor: pointer;
+	}
+	.check-list li label:hover {
+		background: var(--surface-2);
+	}
+	.check-list input[type='checkbox'] {
+		accent-color: var(--accent);
+	}
+	.member-list li {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.35rem 0.45rem;
+		border-radius: var(--radius-sm);
+	}
+	.member-list li:hover {
+		background: var(--surface-2);
+	}
+	.muted-label {
+		color: var(--muted);
+		font-weight: 400;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.5rem;
+		margin-top: 0.9rem;
+	}
+	.actions.split {
+		justify-content: space-between;
+	}
+	.err {
+		margin: 0.6rem 0;
+		padding: 0.5rem 0.65rem;
+		border-radius: var(--radius-sm);
+		background: var(--danger-bg);
+		color: var(--danger-text);
+		border: 1px solid var(--danger-border);
+		font-size: 0.82rem;
+	}
+	.danger {
+		background: var(--danger-text);
+		color: #fff;
+	}
+	.danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger-text) 85%, #000);
+	}
+	@media (max-width: 760px) {
+		.dialog {
+			width: 100%;
+			max-height: 90vh;
+		}
+		.contact-row .chip.subtle {
+			display: none;
+		}
+	}
+
 </style>
