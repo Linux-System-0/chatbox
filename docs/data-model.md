@@ -1,8 +1,9 @@
 # Data Model
 
-All identifiers are 64-bit **Snowflake** values (time-ordered, collision-free
-across nodes) except where a human-chosen string is required. Timestamps are
-stored in UTC.
+All identifiers are **53-bit Snowflake** values (time-ordered and collision-free
+across nodes) except where a human-chosen string is required. 53 bits keep every
+id within JavaScript's `Number.MAX_SAFE_INTEGER`, so the web and Android clients
+can round-trip them without precision loss. Timestamps are stored in UTC.
 
 ## Identifiers
 
