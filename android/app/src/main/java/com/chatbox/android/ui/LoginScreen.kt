@@ -31,7 +31,7 @@ fun LoginScreen(
 	var userId by remember { mutableStateOf("") }
 	var password by remember { mutableStateOf("") }
 	var displayName by remember { mutableStateOf("") }
-	val tr = { key: String -> ClientPlugins.translate(state.locale, key) }
+	val tr = { key: String -> ClientPlugins.translate(state.plugins, state.locale, key) }
 
 	Column(
 		modifier = Modifier.fillMaxSize().padding(24.dp),

@@ -1,50 +1,81 @@
 package com.chatbox.android.plugins
 
 /**
- * Client plugins.
+ * Client plugin facade.
  *
- * Language packs and themes are installed and applied entirely on the client;
- * they never change server behavior (see docs/plugin-system.md).
+ * Language packs and themes are installed at runtime from a JSON file and
+ * scoped to the signed-in account. Only the base English dictionary and the
+ * built-in light/dark schemes are compiled into the app (see
+ * docs/plugin-system.md).
  */
 object ClientPlugins {
-	data class Language(val code: String, val label: String)
+	const val DEFAULT_LOCALE = "en"
+	const val DEFAULT_THEME = "system"
 
-	val languages = listOf(
-		Language("en", "English"),
-		Language("zh-CN", "简体中文"),
+	val BASE_THEMES: Set<String> = setOf("system", "light", "dark")
+
+	data class LanguageOption(val code: String, val label: String)
+	data class ThemeOption(val id: String, val label: String, val builtin: Boolean = false)
+
+	private val baseStrings = mapOf(
+		"app_name" to "ChatBox",
+		"tagline" to "Fast, real-time conversations on every device.",
+		"login" to "Sign in",
+		"register" to "Create account",
+		"logout" to "Sign out",
+		"user_id" to "User ID",
+		"password" to "Password",
+		"display_name" to "Display name",
+		"send" to "Send",
+		"message_placeholder" to "Write a message…",
+		"conversations" to "Conversations",
+		"new_chat" to "New chat (user id)",
+		"language" to "Language",
+		"theme" to "Theme",
+		"light" to "Light",
+		"dark" to "Dark",
+		"system" to "System",
+		"close" to "Close",
+		"remove" to "Remove",
+		"plugins" to "Plugins",
+		"install_plugin" to "Install plugin",
+		"installed_plugins" to "Installed plugins",
+		"no_plugins" to "No plugins installed yet",
+		"plugin_install_hint" to
+			"Choose a ChatBox client plugin file (.json). Plugins apply only to the current account.",
+		"plugin_file_too_large" to "Plugin file is too large (max 256 KiB)",
+		"plugin_installed" to "Plugin installed",
+		"plugin_removed" to "Plugin removed",
+		"plugin_error" to "Plugin installation failed",
+		"kind_language_pack" to "Language pack",
+		"kind_theme" to "Theme",
+		"active" to "Active",
 	)
 
-	val themes = listOf("system", "light", "dark")
+	fun languageOptions(plugins: List<ClientPlugin>): List<LanguageOption> {
+		val options = mutableListOf(LanguageOption(DEFAULT_LOCALE, "English"))
+		for (pack in plugins.filterIsInstance<ClientPlugin.Language>()) {
+			if (options.any { it.code == pack.locale }) continue
+			options += LanguageOption(pack.locale, pack.label)
+		}
+		return options
+	}
 
-	private val strings: Map<String, Map<String, String>> = mapOf(
-		"en" to mapOf(
-			"app_name" to "ChatBox",
-			"login" to "Sign in",
-			"register" to "Create account",
-			"logout" to "Sign out",
-			"user_id" to "User ID",
-			"password" to "Password",
-			"display_name" to "Display name",
-			"send" to "Send",
-			"message_placeholder" to "Write a message…",
-			"conversations" to "Conversations",
-			"new_chat" to "New chat (user id)",
-		),
-		"zh-CN" to mapOf(
-			"app_name" to "ChatBox",
-			"login" to "登录",
-			"register" to "注册",
-			"logout" to "退出登录",
-			"user_id" to "用户 ID",
-			"password" to "密码",
-			"display_name" to "显示名称",
-			"send" to "发送",
-			"message_placeholder" to "输入消息…",
-			"conversations" to "会话",
-			"new_chat" to "新会话（用户 ID）",
-		),
-	)
+	fun themeOptions(plugins: List<ClientPlugin>): List<ThemeOption> {
+		val options = mutableListOf(
+			ThemeOption("system", "System", builtin = true),
+			ThemeOption("light", "Light", builtin = true),
+			ThemeOption("dark", "Dark", builtin = true),
+		)
+		for (pack in plugins.filterIsInstance<ClientPlugin.Theme>()) {
+			if (options.any { it.id == pack.id }) continue
+			options += ThemeOption(pack.id, pack.label)
+		}
+		return options
+	}
 
-	fun translate(locale: String, key: String): String =
-		strings[locale]?.get(key) ?: strings.getValue("en")[key] ?: key
+	fun translate(plugins: List<ClientPlugin>, locale: String, key: String): String {
+		val pack = plugins.filterIsInstance<ClientPlugin.Language>().firstOrNull { it.locale == locale }
+		return pack?.strings?.get(key) ?: baseStrings[key] ?: key
+	}
 }

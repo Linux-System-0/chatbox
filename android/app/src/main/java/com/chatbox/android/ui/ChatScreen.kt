@@ -32,16 +32,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.chatbox.android.plugins.ClientPlugins
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
-	val tr = { key: String -> ClientPlugins.translate(state.locale, key) }
+	val tr = { key: String -> ClientPlugins.translate(state.plugins, state.locale, key) }
 	var draft by remember { mutableStateOf("") }
 	var newChat by remember { mutableStateOf("") }
 	var languageMenu by remember { mutableStateOf(false) }
 	var themeMenu by remember { mutableStateOf(false) }
+	var pluginDialog by remember { mutableStateOf(false) }
+	val installLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+		uri?.let(viewModel::installPlugin)
+	}
 
 	Scaffold(
 		topBar = {
@@ -51,7 +57,7 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 					Box {
 						TextButton(onClick = { languageMenu = true }) { Text("🌐 ${state.locale}") }
 						DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
-							ClientPlugins.languages.forEach { language ->
+							ClientPlugins.languageOptions(state.plugins).forEach { language ->
 								DropdownMenuItem(
 									text = { Text(language.label) },
 									onClick = {
@@ -65,16 +71,19 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 					Box {
 						TextButton(onClick = { themeMenu = true }) { Text("🎨") }
 						DropdownMenu(expanded = themeMenu, onDismissRequest = { themeMenu = false }) {
-							ClientPlugins.themes.forEach { theme ->
+							ClientPlugins.themeOptions(state.plugins).forEach { theme ->
 								DropdownMenuItem(
-									text = { Text(theme) },
+									text = { Text(if (theme.builtin) tr(theme.id) else theme.label) },
 									onClick = {
-										viewModel.setTheme(theme)
+										viewModel.setTheme(theme.id)
 										themeMenu = false
 									},
 								)
 							}
 						}
+					}
+					Box {
+						TextButton(onClick = { pluginDialog = true }) { Text("🧩") }
 					}
 					TextButton(onClick = { viewModel.logout() }) { Text(tr("logout")) }
 				},
@@ -128,6 +137,22 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel) {
 				)
 			}
 		}
+	}
+
+	if (pluginDialog) {
+		PluginManagerDialog(
+			plugins = state.plugins,
+			locale = state.locale,
+			theme = state.theme,
+			onInstall = {
+				installLauncher.launch(
+					arrayOf("application/json", "text/json", "text/plain", "application/octet-stream"),
+				)
+			},
+			onRemove = viewModel::removePlugin,
+			onClose = { pluginDialog = false },
+			tr = tr,
+		)
 	}
 }
 

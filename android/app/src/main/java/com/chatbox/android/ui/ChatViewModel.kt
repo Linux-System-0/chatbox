@@ -1,6 +1,7 @@
 package com.chatbox.android.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chatbox.android.BuildConfig
@@ -16,12 +17,20 @@ import com.chatbox.android.data.Session
 import com.chatbox.android.data.SessionStore
 import com.chatbox.android.realtime.ChatSocket
 import com.chatbox.android.realtime.ServerFrame
+import com.chatbox.android.plugins.ClientPlugin
+import com.chatbox.android.plugins.ClientPluginStore
+import com.chatbox.android.plugins.ClientPlugins
+import com.chatbox.android.plugins.MAX_CLIENT_PLUGIN_BYTES
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import retrofit2.HttpException
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 
 data class ChatUiState(
 	val session: Session? = null,
@@ -31,6 +40,7 @@ data class ChatUiState(
 	val status: String = "offline",
 	val locale: String = "en",
 	val theme: String = "system",
+	val plugins: List<ClientPlugin> = emptyList(),
 	val error: String? = null,
 	val busy: Boolean = false,
 )
@@ -38,6 +48,7 @@ data class ChatUiState(
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	private val api = ApiClient.create(BuildConfig.API_BASE_URL)
 	private val store = SessionStore(application)
+	private val pluginStore = ClientPluginStore(application)
 	private val _state = MutableStateFlow(ChatUiState())
 	val state: StateFlow<ChatUiState> = _state.asStateFlow()
 	private var socket: ChatSocket? = null
@@ -45,6 +56,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	init {
 		store.load()?.let { session ->
 			_state.update { it.copy(session = session) }
+			applyPlugins(session)
 			connect(session)
 			refresh()
 		}
@@ -84,6 +96,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		store.save(session)
 		_state.update { it.copy(session = session) }
+		applyPlugins(session)
 		connect(session)
 		refresh()
 	}
@@ -160,9 +173,94 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 		_state.value = ChatUiState()
 	}
 
-	fun setLocale(locale: String) = _state.update { it.copy(locale = locale) }
+	fun setLocale(locale: String) {
+		_state.update { it.copy(locale = locale) }
+		_state.value.session?.let { pluginStore.setActiveLocale(it.user.userId, locale) }
+	}
 
-	fun setTheme(theme: String) = _state.update { it.copy(theme = theme) }
+	fun setTheme(theme: String) {
+		_state.update { it.copy(theme = theme) }
+		_state.value.session?.let { pluginStore.setActiveTheme(it.user.userId, theme) }
+	}
+
+	/** Install a plugin file chosen with the system file picker. */
+	fun installPlugin(uri: Uri) = viewModelScope.launch {
+		val session = _state.value.session ?: return@launch
+		_state.update { it.copy(busy = true, error = null) }
+		runCatching {
+			withContext(Dispatchers.IO) {
+				val context = getApplication<Application>()
+				val text = context.contentResolver.openInputStream(uri)?.use { input ->
+					input.readLimited(MAX_CLIENT_PLUGIN_BYTES).toString(Charsets.UTF_8)
+				} ?: error("cannot read plugin file")
+				val plugin = pluginStore.install(session.user.userId, text)
+				when (plugin) {
+					is ClientPlugin.Language -> pluginStore.setActiveLocale(session.user.userId, plugin.locale)
+					is ClientPlugin.Theme -> pluginStore.setActiveTheme(session.user.userId, plugin.id)
+				}
+				pluginStore.list(session.user.userId) to plugin
+			}
+		}.onSuccess { (plugins, plugin) ->
+			if (_state.value.session?.user?.userId != session.user.userId) return@onSuccess
+			val current = _state.value
+			val locale = current.locale.takeIf { code ->
+				code == ClientPlugins.DEFAULT_LOCALE || plugins.any { it is ClientPlugin.Language && it.locale == code }
+			} ?: ClientPlugins.DEFAULT_LOCALE
+			val theme = current.theme.takeIf { id ->
+				id in ClientPlugins.BASE_THEMES || plugins.any { it is ClientPlugin.Theme && it.id == id }
+			} ?: ClientPlugins.DEFAULT_THEME
+			val nextLocale = if (plugin is ClientPlugin.Language) plugin.locale else locale
+			val nextTheme = if (plugin is ClientPlugin.Theme) plugin.id else theme
+			pluginStore.setActiveLocale(session.user.userId, nextLocale)
+			pluginStore.setActiveTheme(session.user.userId, nextTheme)
+			_state.update {
+				it.copy(plugins = plugins, locale = nextLocale, theme = nextTheme)
+			}
+		}.onFailure { error ->
+			_state.update {
+				it.copy(
+					error = "${ClientPlugins.translate(it.plugins, it.locale, "plugin_error")}: ${error.message ?: "unknown error"}",
+				)
+			}
+		}
+		_state.update { it.copy(busy = false) }
+	}
+
+	/** Remove one plugin installed for the current account. */
+	fun removePlugin(name: String) = viewModelScope.launch {
+		val session = _state.value.session ?: return@launch
+		runCatching {
+			withContext(Dispatchers.IO) {
+				pluginStore.remove(session.user.userId, name)
+				pluginStore.list(session.user.userId)
+			}
+		}.onSuccess { plugins ->
+			if (_state.value.session?.user?.userId != session.user.userId) return@onSuccess
+			val locale = _state.value.locale.takeIf { code ->
+				code == ClientPlugins.DEFAULT_LOCALE || plugins.any { it is ClientPlugin.Language && it.locale == code }
+			} ?: ClientPlugins.DEFAULT_LOCALE
+			val theme = _state.value.theme.takeIf { id ->
+				id in ClientPlugins.BASE_THEMES || plugins.any { it is ClientPlugin.Theme && it.id == id }
+			} ?: ClientPlugins.DEFAULT_THEME
+			pluginStore.setActiveLocale(session.user.userId, locale)
+			pluginStore.setActiveTheme(session.user.userId, theme)
+			_state.update { it.copy(plugins = plugins, locale = locale, theme = theme) }
+		}.onFailure { fail(it) }
+	}
+
+	private fun applyPlugins(session: Session) {
+		val userId = session.user.userId
+		val plugins = pluginStore.list(userId)
+		val locale = pluginStore.activeLocale(userId)?.takeIf { code ->
+			code == ClientPlugins.DEFAULT_LOCALE || plugins.any { it is ClientPlugin.Language && it.locale == code }
+		} ?: ClientPlugins.DEFAULT_LOCALE
+		val theme = pluginStore.activeTheme(userId)?.takeIf { id ->
+			id in ClientPlugins.BASE_THEMES || plugins.any { it is ClientPlugin.Theme && it.id == id }
+		} ?: ClientPlugins.DEFAULT_THEME
+		pluginStore.setActiveLocale(userId, locale)
+		pluginStore.setActiveTheme(userId, theme)
+		_state.update { it.copy(plugins = plugins, locale = locale, theme = theme) }
+	}
 
 	fun dismissError() = _state.update { it.copy(error = null) }
 
@@ -195,6 +293,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 			else -> error.message ?: "request failed"
 		}
 		_state.update { it.copy(error = message) }
+	}
+
+	private fun InputStream.readLimited(max: Int): ByteArray {
+		val output = ByteArrayOutputStream()
+		val buffer = ByteArray(8192)
+		var total = 0
+		while (true) {
+			val read = read(buffer)
+			if (read < 0) break
+			total += read
+			require(total <= max) { "plugin file is too large (max 256 KiB)" }
+			output.write(buffer, 0, read)
+		}
+		return output.toByteArray()
 	}
 
 	override fun onCleared() {
