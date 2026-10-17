@@ -17,6 +17,41 @@ async function raw(path: string, init: RequestInit): Promise<Response> {
 	return fetch(`${API_BASE}${path}`, init);
 }
 
+/** Exchange the refresh token and persist the renewed session. */
+async function refreshSession(current: Session): Promise<Session | null> {
+	const refreshed = await raw('/auth/refresh', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ refresh_token: current.refreshToken })
+	});
+	if (!refreshed.ok) return null;
+	const data = (await refreshed.json()) as {
+		tokens: { access_token: string; refresh_token: string; session_id: string; device_id: number };
+	};
+	const next: Session = {
+		...current,
+		accessToken: data.tokens.access_token,
+		refreshToken: data.tokens.refresh_token,
+		sessionId: data.tokens.session_id,
+		deviceId: data.tokens.device_id
+	};
+	saveSession(next);
+	return next;
+}
+
+async function readError(response: Response): Promise<ApiError> {
+	let code = 'unknown';
+	let message = response.statusText;
+	try {
+		const payload = (await response.json()) as { error?: { code?: string; message?: string } };
+		code = payload.error?.code ?? code;
+		message = payload.error?.message ?? message;
+	} catch {
+		// keep the status text
+	}
+	return new ApiError(response.status, code, message);
+}
+
 /** Perform an authenticated request, refreshing the token once on 401. */
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
 	let current = get(session);
@@ -31,48 +66,52 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 
 	let response = await raw(path, buildInit(current?.accessToken));
 	if (response.status === 401 && current?.refreshToken) {
-		const refreshed = await raw('/auth/refresh', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ refresh_token: current.refreshToken })
-		});
-		if (refreshed.ok) {
-			const data = (await refreshed.json()) as {
-				tokens: { access_token: string; refresh_token: string; session_id: string; device_id: number };
-			};
-			const next: Session = {
-				...current,
-				accessToken: data.tokens.access_token,
-				refreshToken: data.tokens.refresh_token,
-				sessionId: data.tokens.session_id,
-				deviceId: data.tokens.device_id
-			};
-			saveSession(next);
-			current = next;
+		const refreshed = await refreshSession(current);
+		if (refreshed) {
+			current = refreshed;
 			response = await raw(path, buildInit(current.accessToken));
 		}
 	}
 
 	if (!response.ok) {
-		let code = 'unknown';
-		let message = response.statusText;
-		try {
-			const payload = (await response.json()) as { error?: { code?: string; message?: string } };
-			code = payload.error?.code ?? code;
-			message = payload.error?.message ?? message;
-		} catch {
-			// keep the status text
-		}
+		const error = await readError(response);
 		if (response.status === 401) {
 			clearSession();
 		}
-		throw new ApiError(response.status, code, message);
+		throw error;
 	}
 
 	if (response.status === 204) {
 		return undefined as T;
 	}
 	return (await response.json()) as T;
+}
+
+/** Fetch an authenticated binary resource (attachments). */
+export async function apiBlob(path: string): Promise<Blob> {
+	let current = get(session);
+	const request = (token?: string): Promise<Response> =>
+		raw(path, {
+			headers: token ? { authorization: `Bearer ${token}` } : {}
+		});
+
+	let response = await request(current?.accessToken);
+	if (response.status === 401 && current?.refreshToken) {
+		const refreshed = await refreshSession(current);
+		if (refreshed) {
+			current = refreshed;
+			response = await request(current.accessToken);
+		}
+	}
+
+	if (!response.ok) {
+		const error = await readError(response);
+		if (response.status === 401) {
+			clearSession();
+		}
+		throw error;
+	}
+	return response.blob();
 }
 
 export const getJson = <T>(path: string) => api<T>('GET', path);

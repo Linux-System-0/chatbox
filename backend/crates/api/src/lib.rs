@@ -101,6 +101,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/groups/{id}/members/{user_id}/mute",
             post(handlers::mute_member),
         )
+        .route(
+            "/api/v1/groups/{id}/members/{user_id}/role",
+            post(handlers::set_member_role),
+        )
+        .route(
+            "/api/v1/groups/{id}/remark",
+            patch(handlers::set_group_remark),
+        )
         .route("/api/v1/groups/{id}/transfer", post(handlers::transfer))
         .route("/api/v1/groups/{id}/leave", post(handlers::leave_group))
         .route("/api/v1/blocks", get(handlers::list_blocks))

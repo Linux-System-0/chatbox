@@ -2,9 +2,10 @@
 
 use std::collections::HashSet;
 
-use super::{AuthContext, Services, normalize_avatar, normalize_optional_text};
+use super::{AuthContext, Services, events::sync_frame, normalize_avatar, normalize_optional_text};
 use crate::error::{Error, Result};
 use crate::model::{Contact, FriendRequest, FriendRequestStatus, User};
+use crate::protocol::SyncScope;
 
 /// A contact together with the contact's profile.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,7 +78,25 @@ impl Services {
             responded_at: None,
         };
         self.stores.friend_requests.create(&request).await?;
+        self.notify_contact_change(
+            &[request.from_id, request.to_id],
+            &[SyncScope::Requests],
+            None,
+        )
+        .await;
         Ok(request)
+    }
+
+    async fn notify_contact_change(
+        &self,
+        user_ids: &[i64],
+        scopes: &[SyncScope],
+        conversation_id: Option<i64>,
+    ) {
+        let frame = sync_frame(scopes, conversation_id, None);
+        if let Err(e) = self.notify_users(user_ids, &frame).await {
+            tracing::warn!(error = %e, "contact sync notification failed");
+        }
     }
 
     /// List requests sent to or by the caller, with participant profiles.
@@ -135,6 +154,12 @@ impl Services {
                 created_at: now,
             })
             .await?;
+        self.notify_contact_change(
+            &[request.from_id, request.to_id],
+            &[SyncScope::Requests, SyncScope::Contacts],
+            None,
+        )
+        .await;
         Ok(request)
     }
 
@@ -154,6 +179,12 @@ impl Services {
         request.status = FriendRequestStatus::Rejected;
         request.responded_at = Some(self.now());
         self.stores.friend_requests.update(&request).await?;
+        self.notify_contact_change(
+            &[request.from_id, request.to_id],
+            &[SyncScope::Requests],
+            None,
+        )
+        .await;
         Ok(request)
     }
 
@@ -235,6 +266,12 @@ impl Services {
                 contact.remark_avatar_url.clone(),
             )
             .await?;
+        self.notify_contact_change(
+            &[ctx.user_id],
+            &[SyncScope::Contacts, SyncScope::Conversations],
+            None,
+        )
+        .await;
         Ok(ContactView {
             user: target,
             remark: contact.remark,
@@ -247,6 +284,12 @@ impl Services {
     pub async fn remove_contact(&self, ctx: &AuthContext, contact_user_id: &str) -> Result<()> {
         let target = self.get_user_by_user_id(contact_user_id).await?;
         self.stores.contacts.delete(ctx.user_id, target.id).await?;
+        self.notify_contact_change(
+            &[ctx.user_id, target.id],
+            &[SyncScope::Contacts, SyncScope::Conversations],
+            None,
+        )
+        .await;
         Ok(())
     }
 }

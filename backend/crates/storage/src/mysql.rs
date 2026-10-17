@@ -366,6 +366,7 @@ fn group_member_from_row(row: &MySqlRow) -> Result<GroupMember> {
         group_id: row.try_get("group_id").map_err(Error::storage)?,
         user_id: row.try_get("user_id").map_err(Error::storage)?,
         role: group_role(&role_raw)?,
+        remark: row.try_get("remark").map_err(Error::storage)?,
         muted_until: opt_ts(row, "muted_until")?,
         joined_at: ts(row, "joined_at")?,
     })
@@ -1163,13 +1164,14 @@ impl GroupRepo for MySqlShard {
 
     async fn add_member(&self, member: &GroupMember) -> Result<()> {
         sqlx::query(
-            "INSERT INTO group_members (group_id, user_id, role, muted_until, joined_at)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO group_members (group_id, user_id, role, remark, muted_until, joined_at)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE role = VALUES(role)",
         )
         .bind(member.group_id)
         .bind(member.user_id)
         .bind(group_role_str(member.role))
+        .bind(&member.remark)
         .bind(opt_naive(member.muted_until))
         .bind(naive(member.joined_at))
         .execute(&self.pool)
@@ -1199,9 +1201,11 @@ impl GroupRepo for MySqlShard {
 
     async fn update_member(&self, member: &GroupMember) -> Result<()> {
         sqlx::query(
-            "UPDATE group_members SET role = ?, muted_until = ? WHERE group_id = ? AND user_id = ?",
+            "UPDATE group_members SET role = ?, remark = ?, muted_until = ?
+             WHERE group_id = ? AND user_id = ?",
         )
         .bind(group_role_str(member.role))
+        .bind(&member.remark)
         .bind(opt_naive(member.muted_until))
         .bind(member.group_id)
         .bind(member.user_id)

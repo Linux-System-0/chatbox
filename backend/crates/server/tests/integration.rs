@@ -430,6 +430,74 @@ async fn group_roles_and_lifecycle() {
         .rename_group(&alice, group.group.id, "team-renamed")
         .await
         .unwrap();
+
+    // The owner can promote and demote administrators.
+    let promoted = h
+        .services
+        .set_group_member_role(&alice, group.group.id, "bob", GroupRole::Admin)
+        .await
+        .unwrap();
+    assert!(
+        promoted
+            .members
+            .iter()
+            .any(|m| m.user.user_id == "bob" && m.role == GroupRole::Admin)
+    );
+    h.services
+        .rename_group(&bob, group.group.id, "team-by-admin")
+        .await
+        .unwrap();
+    // Only the owner may change roles.
+    assert!(
+        h.services
+            .set_group_member_role(&bob, group.group.id, "carol", GroupRole::Admin)
+            .await
+            .is_err()
+    );
+    h.services
+        .set_group_member_role(&alice, group.group.id, "bob", GroupRole::Member)
+        .await
+        .unwrap();
+    assert!(
+        h.services
+            .rename_group(&bob, group.group.id, "nope")
+            .await
+            .is_err()
+    );
+
+    // A group remark overrides the group name only for its owner.
+    h.services
+        .set_group_remark(&bob, group.group.id, Some("bob's team".into()))
+        .await
+        .unwrap();
+    let bob_conversations = h.services.list_conversations(&bob).await.unwrap();
+    let bob_group = bob_conversations
+        .iter()
+        .find(|conversation| conversation.id == group.group.conversation_id)
+        .unwrap();
+    assert_eq!(bob_group.title, "bob's team");
+    let alice_conversations = h.services.list_conversations(&alice).await.unwrap();
+    let alice_group = alice_conversations
+        .iter()
+        .find(|conversation| conversation.id == group.group.conversation_id)
+        .unwrap();
+    assert_eq!(alice_group.title, "team-by-admin");
+    // Another member's private group remark is not exposed.
+    let alice_view = h.services.get_group(&alice, group.group.id).await.unwrap();
+    assert!(
+        alice_view
+            .members
+            .iter()
+            .find(|member| member.user.user_id == "bob")
+            .unwrap()
+            .remark
+            .is_none()
+    );
+    h.services
+        .set_group_remark(&bob, group.group.id, None)
+        .await
+        .unwrap();
+
     let until = h.services.now() + chrono::Duration::minutes(5);
     h.services
         .mute_group_member(&alice, group.group.id, "bob", Some(until))
@@ -576,6 +644,109 @@ async fn fanout_routes_to_registered_connections() {
         delivery.frame,
         chatbox_core::protocol::ServerFrame::Message { .. }
     ));
+}
+
+#[tokio::test]
+async fn group_changes_push_sync_frames() {
+    let h = harness();
+    let (_, _, alice) = register(&h.services, "alice").await;
+    let (bob_id, _, _bob) = register(&h.services, "bob").await;
+    let group = h
+        .services
+        .create_group(&alice, "team", &["bob".into()])
+        .await
+        .unwrap();
+
+    h.services
+        .infra
+        .registry
+        .register(
+            bob_id,
+            ConnectionInfo {
+                node_id: "node-1".into(),
+                device_id: 1,
+                conn_id: "conn-1".into(),
+                last_seen: h.services.now(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut rx = h.services.infra.bus.subscribe();
+    h.services
+        .set_group_member_role(&alice, group.group.id, "bob", GroupRole::Admin)
+        .await
+        .unwrap();
+
+    let message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out")
+        .expect("bus closed");
+    let delivery: chatbox_core::protocol::Delivery =
+        serde_json::from_str(&message.payload).unwrap();
+    assert_eq!(delivery.user_id, bob_id);
+    assert!(matches!(
+        delivery.frame,
+        chatbox_core::protocol::ServerFrame::Sync { .. }
+    ));
+}
+
+#[tokio::test]
+async fn file_upload_round_trip() {
+    let h = harness();
+    let (_, _, alice) = register(&h.services, "alice").await;
+    let (_, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
+    let conv = h
+        .services
+        .get_or_create_direct(&alice, "bob")
+        .await
+        .unwrap();
+
+    let upload = h
+        .services
+        .presign_attachment(&alice, "report.pdf", "application/pdf", 4)
+        .await
+        .unwrap();
+    h.services
+        .store_upload(&alice, upload.attachment_id, b"data")
+        .await
+        .unwrap();
+    let attachment = h
+        .services
+        .complete_attachment(
+            &alice,
+            upload.attachment_id,
+            "report.pdf",
+            "application/pdf",
+        )
+        .await
+        .unwrap();
+    assert_eq!(attachment.filename, "report.pdf");
+    assert_eq!(attachment.size, 4);
+
+    let message = h
+        .services
+        .send_message(
+            &alice,
+            SendRequest {
+                conversation_id: conv.id,
+                client_msg_id: "file-1".into(),
+                kind: MessageKind::File,
+                content: Some("report.pdf".into()),
+                attachment_id: Some(attachment.id),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(message.attachment_id, Some(attachment.id));
+
+    let (fetched, url) = h
+        .services
+        .get_attachment(&bob, attachment.id)
+        .await
+        .unwrap();
+    assert_eq!(fetched.sha256, attachment.sha256);
+    assert!(url.contains(&attachment.id.to_string()));
 }
 
 #[tokio::test]

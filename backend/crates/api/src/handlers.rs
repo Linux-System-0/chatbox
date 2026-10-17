@@ -622,6 +622,45 @@ pub async fn mute_member(
 }
 
 #[derive(Deserialize)]
+pub struct MemberRoleBody {
+    role: GroupRole,
+}
+
+/// `POST /groups/{id}/members/{user_id}/role`
+pub async fn set_member_role(
+    State(state): State<AppState>,
+    AuthUser(ctx): AuthUser,
+    Path((id, user_id)): Path<(i64, String)>,
+    Json(body): Json<MemberRoleBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let group = state
+        .services
+        .set_group_member_role(&ctx, id, &user_id, body.role)
+        .await?;
+    Ok(Json(serde_json::json!({ "group": group })))
+}
+
+#[derive(Deserialize)]
+pub struct GroupRemarkBody {
+    #[serde(default)]
+    remark: Option<String>,
+}
+
+/// `PATCH /groups/{id}/remark`
+pub async fn set_group_remark(
+    State(state): State<AppState>,
+    AuthUser(ctx): AuthUser,
+    Path(id): Path<i64>,
+    Json(body): Json<GroupRemarkBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let group = state
+        .services
+        .set_group_remark(&ctx, id, body.remark)
+        .await?;
+    Ok(Json(serde_json::json!({ "group": group })))
+}
+
+#[derive(Deserialize)]
 pub struct TransferBody {
     user_id: String,
 }

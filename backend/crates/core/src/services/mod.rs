@@ -5,6 +5,7 @@ mod attachment;
 mod auth;
 mod block;
 mod contact;
+mod events;
 mod group;
 mod messaging;
 mod search;

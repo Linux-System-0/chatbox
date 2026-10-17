@@ -2,9 +2,10 @@
 
 use std::collections::HashSet;
 
-use super::{AuthContext, Services, normalize_avatar, normalize_optional_text};
+use super::{AuthContext, Services, events::sync_frame, normalize_avatar, normalize_optional_text};
 use crate::error::{Error, Result};
 use crate::model::{Device, User};
+use crate::protocol::SyncScope;
 
 impl Services {
     /// Fetch a user by internal id.
@@ -54,6 +55,25 @@ impl Services {
 
         user.updated_at = self.now();
         self.stores.users.update(&user).await?;
+        let mut audience: HashSet<i64> = HashSet::from([ctx.user_id]);
+        for contact in self.stores.contacts.list(ctx.user_id).await? {
+            audience.insert(contact.contact_id);
+        }
+        for membership in self.stores.conversations.list_for_user(ctx.user_id).await? {
+            for member in self
+                .stores
+                .conversations
+                .list_members(membership.conversation_id)
+                .await?
+            {
+                audience.insert(member.user_id);
+            }
+        }
+        let frame = sync_frame(&[SyncScope::Contacts, SyncScope::Conversations], None, None);
+        let audience: Vec<i64> = audience.into_iter().collect();
+        if let Err(e) = self.notify_users(&audience, &frame).await {
+            tracing::warn!(error = %e, "profile sync notification failed");
+        }
         Ok(user)
     }
 

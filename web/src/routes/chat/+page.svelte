@@ -2,11 +2,17 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Avatar from '$lib/Avatar.svelte';
-	import { deleteJson, getJson, patchJson, postJson } from '$lib/api';
+	import { apiBlob, deleteJson, getJson, patchJson, postJson } from '$lib/api';
 	import { effectiveAvatar, effectiveName, fileToAvatar } from '$lib/avatar';
 	import { translator } from '$lib/i18n';
 	import { loadSession, session, type User } from '$lib/session';
-	import { ChatSocket, type ChatMessage, type ConnectionStatus, type ServerFrame } from '$lib/ws';
+	import {
+		ChatSocket,
+		type ChatMessage,
+		type ConnectionStatus,
+		type ServerFrame,
+		type SyncScope
+	} from '$lib/ws';
 
 	interface ConversationView {
 		id: number;
@@ -43,6 +49,7 @@
 	interface GroupMemberView {
 		user: User;
 		role: 'owner' | 'admin' | 'member';
+		remark: string | null;
 		muted_until: string | null;
 		joined_at: string;
 	}
@@ -69,6 +76,12 @@
 		user_id: number;
 		online: boolean;
 	}
+	interface AttachmentInfo {
+		id: number;
+		filename: string;
+		size: number;
+		mime: string;
+	}
 
 	$: tr = $translator;
 
@@ -91,6 +104,15 @@
 	let socket: ChatSocket | null = null;
 	let messagePane: HTMLDivElement | null = null;
 	let composerEl: HTMLTextAreaElement | null = null;
+	let fileInput: HTMLInputElement | null = null;
+	let attachments: Record<number, AttachmentInfo> = {};
+	let uploadBusy = false;
+	let uploadError = '';
+	let connectedBefore = false;
+	let syncTimer: ReturnType<typeof setTimeout> | null = null;
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	const pendingScopes = new Set<SyncScope>();
+	const attachmentLoading = new Set<number>();
 
 	let contactEditor: ContactView | null = null;
 	let contactRemark = '';
@@ -107,6 +129,7 @@
 	let showGroupInfo = false;
 	let groupInfo: GroupView | null = null;
 	let groupRename = '';
+	let groupRemark = '';
 	let groupAddSelection: number[] = [];
 	let groupActionError = '';
 
@@ -137,9 +160,28 @@
 			(value) => (status = value)
 		);
 		socket.connect();
+		document.addEventListener('visibilitychange', onForeground);
+		window.addEventListener('focus', onForeground);
+		pollTimer = setInterval(() => {
+			if (document.visibilityState === 'visible' && status === 'online') {
+				scheduleSync(['conversations', 'contacts', 'requests', 'groups']);
+			}
+		}, 60000);
 	});
 
-	onDestroy(() => socket?.close());
+	onDestroy(() => {
+		socket?.close();
+		document.removeEventListener('visibilitychange', onForeground);
+		window.removeEventListener('focus', onForeground);
+		if (syncTimer) clearTimeout(syncTimer);
+		if (pollTimer) clearInterval(pollTimer);
+	});
+
+	function onForeground() {
+		if (document.visibilityState === 'visible') {
+			scheduleSync(['conversations', 'contacts', 'requests', 'groups']);
+		}
+	}
 
 	function buildMessageItems(
 		list: ChatMessage[],
@@ -196,13 +238,66 @@
 		return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	}
 
-	function previewOf(conversation: ConversationView): string {
+	function previewOf(
+		conversation: ConversationView,
+		known: Record<number, AttachmentInfo>,
+		t: (key: string) => string
+	): string {
 		const message = conversation.last_message;
-		return message ? contentOf(message) : '';
+		return message ? contentOf(message, known, t) : '';
 	}
 
-	function contentOf(message: ChatMessage): string {
-		return message.content ?? (message.kind === 'file' ? tr('file') : `[${message.kind}]`);
+	function contentOf(
+		message: ChatMessage,
+		known: Record<number, AttachmentInfo>,
+		t: (key: string) => string
+	): string {
+		if (message.kind === 'file') {
+			const attachment = message.attachment_id ? known[message.attachment_id] : undefined;
+			return attachment?.filename ?? message.content ?? t('file');
+		}
+		return message.content ?? `[${message.kind}]`;
+	}
+
+	function formatSize(size: number): string {
+		if (size < 1024) return `${size} B`;
+		if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KiB`;
+		if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
+		return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+	}
+
+	function ensureAttachments(list: ChatMessage[]) {
+		for (const message of list) {
+			const id = message.attachment_id;
+			if (message.kind !== 'file' || !id || attachments[id] || attachmentLoading.has(id)) continue;
+			attachmentLoading.add(id);
+			getJson<{ attachment: AttachmentInfo }>(`/files/${id}`)
+				.then((response) => {
+					attachments = { ...attachments, [id]: response.attachment };
+				})
+				.catch(() => {
+					// The message still renders with its stored filename.
+				})
+				.finally(() => attachmentLoading.delete(id));
+		}
+	}
+
+	async function downloadAttachment(message: ChatMessage) {
+		const id = message.attachment_id;
+		if (!id) return;
+		try {
+			const blob = await apiBlob(`/files/${id}/content`);
+			const objectUrl = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = objectUrl;
+			anchor.download = attachments[id]?.filename ?? message.content ?? `file-${id}`;
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+		} catch (e) {
+			error = e instanceof Error ? e.message : tr('download_failed');
+		}
 	}
 
 	function identityFor(userId: number): { name: string; avatar: string | null } {
@@ -273,7 +368,17 @@
 			await refreshPresence();
 			if (selected !== null) {
 				const conversation = conversations.find((item) => item.id === selected);
-				if (conversation?.kind === 'group') await loadGroupInfo(conversation);
+				if (!conversation) {
+					// The group was dissolved or we were removed from it.
+					selected = null;
+					messages = [];
+					groupInfo = null;
+					showGroupInfo = false;
+				} else if (conversation.kind === 'group') {
+					await loadGroupInfo(conversation);
+				} else {
+					groupInfo = null;
+				}
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'failed to load';
@@ -309,9 +414,13 @@
 				`/conversations/${id}/messages?limit=100`
 			);
 			messages = response.messages;
+			ensureAttachments(messages);
 			await postJson(`/conversations/${id}/read`, { seq: messages.at(-1)?.seq ?? 0 });
 			const conv = conversations.find((c) => c.id === id);
-			if (conv) conv.unread = 0;
+			if (conv) {
+				conv.unread = 0;
+				conversations = [...conversations];
+			}
 			if (conv?.kind === 'group') {
 				await loadGroupInfo(conv);
 				showGroupInfo = false;
@@ -329,24 +438,81 @@
 	function handleFrame(frame: ServerFrame) {
 		if (frame.type === 'message') {
 			const message = frame.message;
-			if (message.conversation_id === selected) {
-				messages = [...messages, message];
-				scrollToBottom();
-				if (socket) socket.send({ type: 'ack', conversation_id: selected, seq: message.seq });
-			}
+			applyIncomingMessage(message);
 			const conv = conversations.find((c) => c.id === message.conversation_id);
 			if (conv) {
 				conv.last_message = message;
 				if (message.conversation_id !== selected) conv.unread += 1;
+				conversations = [...conversations].sort((a, b) => {
+					const at = a.last_message ? new Date(a.last_message.created_at).getTime() : 0;
+					const bt = b.last_message ? new Date(b.last_message.created_at).getTime() : 0;
+					return bt - at;
+				});
+			} else {
+				// A new direct/group conversation: pull the updated list.
+				scheduleSync(['conversations']);
 			}
 		} else if (frame.type === 'message_hint') {
 			if (frame.conversation_id === selected) {
 				selectConversation(frame.conversation_id);
+			} else {
+				scheduleSync(['conversations']);
 			}
 		} else if (frame.type === 'presence') {
 			presence = { ...presence, [frame.user_id]: frame.online };
+		} else if (frame.type === 'sync') {
+			scheduleSync(frame.scopes);
+		} else if (frame.type === 'ready') {
+			if (connectedBefore) {
+				// Reconnects may have missed frames; reload the open conversation.
+				scheduleSync(['conversations', 'contacts', 'requests', 'groups']);
+				if (selected !== null) reloadSelectedMessages();
+			}
+			connectedBefore = true;
 		} else if (frame.type === 'error') {
 			error = frame.message;
+		}
+	}
+
+	function applyIncomingMessage(message: ChatMessage) {
+		ensureAttachments([message]);
+		if (message.conversation_id !== selected) return;
+		if (messages.some((item) => item.id === message.id)) return;
+		messages = [...messages, message].sort((a, b) => a.seq - b.seq);
+		scrollToBottom();
+		if (socket) socket.send({ type: 'ack', conversation_id: message.conversation_id, seq: message.seq });
+	}
+
+	function scheduleSync(scopes: SyncScope[]) {
+		for (const scope of scopes) pendingScopes.add(scope);
+		if (syncTimer) return;
+		syncTimer = setTimeout(() => {
+			syncTimer = null;
+			pendingScopes.clear();
+			void refreshAll();
+		}, 150);
+	}
+
+	async function reloadSelectedMessages() {
+		if (selected === null) return;
+		const conversationId = selected;
+		try {
+			const response = await getJson<{ messages: ChatMessage[] }>(
+				`/conversations/${conversationId}/messages?limit=100`
+			);
+			if (selected !== conversationId) return;
+			messages = response.messages;
+			ensureAttachments(messages);
+			await postJson(`/conversations/${conversationId}/read`, {
+				seq: messages.at(-1)?.seq ?? 0
+			});
+			const conv = conversations.find((item) => item.id === conversationId);
+			if (conv) {
+				conv.unread = 0;
+				conversations = [...conversations];
+			}
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'failed to load messages';
 		}
 	}
 
@@ -362,6 +528,52 @@
 		});
 		draft = '';
 		if (composerEl) composerEl.style.height = 'auto';
+	}
+
+	function openFilePicker() {
+		fileInput?.click();
+	}
+
+	async function chooseFile(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file || selected === null || !socket) return;
+		const conversationId = selected;
+		uploadBusy = true;
+		uploadError = '';
+		try {
+			const mime = file.type || 'application/octet-stream';
+			const presign = await postJson<{
+				upload: { attachment_id: number; upload_url: string };
+			}>('/files/presign', { filename: file.name, content_type: mime, size: file.size });
+			const uploadUrl = new URL(presign.upload.upload_url, location.href);
+			// Local development builds point the pre-signed URL at the API; route
+			// it through the current origin so the dev proxy and auth header work.
+			const local = uploadUrl.pathname.startsWith('/api/v1/files/upload/');
+			const target = local ? `${uploadUrl.pathname}${uploadUrl.search}` : uploadUrl.toString();
+			const headers: Record<string, string> = { 'content-type': mime };
+			if (local && $session) headers.authorization = `Bearer ${$session.accessToken}`;
+			const response = await fetch(target, { method: 'PUT', headers, body: file });
+			if (!response.ok) throw new Error(`upload failed (${response.status})`);
+			const completed = await postJson<{ attachment: AttachmentInfo }>(
+				`/files/${presign.upload.attachment_id}/complete`,
+				{ filename: file.name, content_type: mime }
+			);
+			attachments = { ...attachments, [completed.attachment.id]: completed.attachment };
+			socket?.send({
+				type: 'send',
+				client_msg_id: crypto.randomUUID(),
+				conversation_id: conversationId,
+				kind: 'file',
+				content: completed.attachment.filename,
+				attachment_id: completed.attachment.id
+			});
+		} catch (e) {
+			uploadError = e instanceof Error ? e.message : tr('upload_failed');
+		} finally {
+			uploadBusy = false;
+		}
 	}
 
 	async function startDirect() {
@@ -551,6 +763,8 @@
 			);
 			groupInfo = response.group;
 			groupRename = response.group.group.name;
+			groupRemark =
+				response.group.members.find((member) => member.user.id === $session?.user.id)?.remark ?? '';
 			groupAddSelection = [];
 			groupActionError = '';
 		} catch (e) {
@@ -613,6 +827,36 @@
 				{ minutes: muted ? null : 60 }
 			);
 			await loadGroupInfo(selectedConversation as ConversationView);
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function setGroupRole(member: GroupMemberView, role: 'admin' | 'member') {
+		if (!groupInfo) return;
+		try {
+			const response = await postJson<{ group: GroupView }>(
+				`/groups/${groupInfo.group.id}/members/${encodeURIComponent(member.user.user_id)}/role`,
+				{ role }
+			);
+			groupInfo = response.group;
+			await refreshAll();
+		} catch (e) {
+			groupActionError = e instanceof Error ? e.message : tr('group_error');
+		}
+	}
+
+	async function saveGroupRemark() {
+		if (!groupInfo) return;
+		try {
+			const response = await patchJson<{ group: GroupView }>(
+				`/groups/${groupInfo.group.id}/remark`,
+				{ remark: groupRemark.trim() || null }
+			);
+			groupInfo = response.group;
+			groupRemark =
+				response.group.members.find((member) => member.user.id === myId)?.remark ?? '';
+			await refreshAll();
 		} catch (e) {
 			groupActionError = e instanceof Error ? e.message : tr('group_error');
 		}
@@ -741,7 +985,9 @@
 											{/if}
 										</span>
 										<span class="row-bottom">
-											<span class="row-preview">{previewOf(conversation)}</span>
+											<span class="row-preview">
+												{previewOf(conversation, attachments, tr)}
+											</span>
 											{#if conversation.unread > 0}
 												<span class="badge">{conversation.unread > 99 ? '99+' : conversation.unread}</span>
 											{/if}
@@ -956,7 +1202,7 @@
 				</div>
 				{#each searchResults as result (result.id)}
 					<button class="result" on:click={() => jumpTo(result)}>
-						<span class="result-content">{contentOf(result)}</span>
+						<span class="result-content">{contentOf(result, attachments, tr)}</span>
 						<span class="result-meta">
 							#{result.seq} · {shortTime(result.created_at)}
 						</span>
@@ -1005,7 +1251,38 @@
 							{#if selectedConversation?.kind === 'group' && !item.mine && item.head}
 								<span class="sender">{identityFor(item.message.sender_id).name}</span>
 							{/if}
-							<span class="content">{contentOf(item.message)}</span>
+							{#if item.message.kind === 'file'}
+								<button
+									type="button"
+									class="file-card"
+									title={tr('download')}
+									on:click={() => downloadAttachment(item.message)}
+								>
+									<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+										<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+										<path d="M14 3v5h5" stroke-linejoin="round" />
+									</svg>
+									<span class="file-meta">
+										<span class="file-name">
+											{item.message.attachment_id
+												? attachments[item.message.attachment_id]?.filename ??
+													item.message.content ??
+													tr('file')
+												: item.message.content ?? tr('file')}
+										</span>
+										{#if item.message.attachment_id && attachments[item.message.attachment_id]}
+											<span class="file-size">
+												{formatSize(attachments[item.message.attachment_id].size)}
+											</span>
+										{/if}
+									</span>
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+										<path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" stroke-linecap="round" stroke-linejoin="round" />
+									</svg>
+								</button>
+							{:else}
+								<span class="content">{item.message.content}</span>
+							{/if}
 							{#if item.tail}
 								<span class="time">{shortTime(item.message.created_at)}</span>
 							{/if}
@@ -1017,6 +1294,29 @@
 
 		{#if selected !== null}
 			<form class="composer" on:submit|preventDefault={sendMessage}>
+				<input
+					class="file-input"
+					bind:this={fileInput}
+					type="file"
+					on:change={chooseFile}
+					disabled={uploadBusy}
+				/>
+				<button
+					type="button"
+					class="attach"
+					title={tr('attach_file')}
+					aria-label={tr('attach_file')}
+					disabled={uploadBusy || status !== 'online'}
+					on:click={openFilePicker}
+				>
+					{#if uploadBusy}
+						<span class="spinner" aria-hidden="true"></span>
+					{:else}
+						<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+							<path d="M21 12.5 12.7 20.8a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10.7 18.7a2 2 0 0 1-2.8-2.8l7.7-7.7" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+					{/if}
+				</button>
 				<textarea
 					rows="1"
 					placeholder={tr('message_placeholder')}
@@ -1031,6 +1331,9 @@
 						}
 					}}
 				></textarea>
+				{#if uploadError}
+					<span class="upload-error" role="alert" title={uploadError}>{uploadError}</span>
+				{/if}
 				<button type="submit" disabled={!draft.trim()}>
 					<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
 						<path d="M3.4 20.4 21 12 3.4 3.6 3 10l12 2-12 2z" />
@@ -1168,6 +1471,16 @@
 				</div>
 			{/if}
 
+			<div class="inline-form">
+				<input
+					bind:value={groupRemark}
+					maxlength="64"
+					placeholder={groupInfo.group.name}
+					aria-label={tr('group_remark')}
+				/>
+				<button type="button" on:click={saveGroupRemark}>{tr('save_remark')}</button>
+			</div>
+
 			<h3>{tr('members')}</h3>
 			<ul class="member-list">
 				{#each groupInfo.members as member (member.user.id)}
@@ -1195,6 +1508,14 @@
 							class:on={isOnline(member.user.id)}
 							title={isOnline(member.user.id) ? tr('online') : tr('offline')}
 						></span>
+						{#if isGroupOwner && member.role !== 'owner' && member.user.id !== myId}
+							<button
+								class="chip subtle"
+								on:click={() => setGroupRole(member, member.role === 'admin' ? 'member' : 'admin')}
+							>
+								{member.role === 'admin' ? tr('revoke_admin') : tr('make_admin')}
+							</button>
+						{/if}
 						{#if canManageGroup && member.role !== 'owner' && member.user.id !== myId && (isGroupOwner || member.role === 'member')}
 							<button class="chip subtle" on:click={() => toggleMute(member)}>
 								{member.muted_until && new Date(member.muted_until).getTime() > Date.now()
@@ -1738,6 +2059,45 @@
 	.content {
 		white-space: pre-wrap;
 	}
+	.file-card {
+		display: flex;
+		align-items: center;
+		gap: 0.65rem;
+		width: 100%;
+		background: transparent;
+		color: inherit;
+		border: none;
+		border-radius: var(--radius-sm);
+		padding: 0.15rem;
+		font-weight: 400;
+		text-align: left;
+	}
+	.file-card:hover:not(:disabled) {
+		background: color-mix(in srgb, currentColor 9%, transparent);
+	}
+	.file-meta {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		flex: 1;
+	}
+	.file-name {
+		font-size: 0.85rem;
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.file-size {
+		font-size: 0.7rem;
+		color: var(--muted);
+	}
+	.line.mine .file-size {
+		color: color-mix(in srgb, var(--bubble-out-text) 75%, transparent);
+	}
+	.file-input {
+		display: none;
+	}
 	.time {
 		display: block;
 		font-size: 0.65rem;
@@ -1781,6 +2141,32 @@
 		gap: 0.4rem;
 		height: 2.6rem;
 		padding: 0 1rem;
+	}
+	.composer .attach {
+		padding: 0 0.7rem;
+		flex: none;
+	}
+	.composer .attach .spinner {
+		width: 15px;
+		height: 15px;
+		border: 2px solid var(--border);
+		border-top-color: var(--accent);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	.upload-error {
+		max-width: 11rem;
+		align-self: center;
+		font-size: 0.72rem;
+		color: var(--danger-text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	input {
 		padding: 0.5rem 0.65rem;

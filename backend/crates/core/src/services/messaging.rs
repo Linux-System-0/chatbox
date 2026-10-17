@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 
-use super::{AuthContext, Services, normalize_text};
+use super::{AuthContext, Services, events::sync_frame, normalize_text};
 use crate::error::{Error, Result};
 use crate::model::{
     Conversation, ConversationKind, ConversationMember, Message, MessageKind, OutboxEvent,
 };
+use crate::protocol::SyncScope;
 
 /// A send request from a client.
 #[derive(Debug, Clone)]
@@ -101,6 +102,10 @@ impl Services {
                     joined_at: now,
                 })
                 .await?;
+        }
+        let frame = sync_frame(&[SyncScope::Conversations], Some(conversation.id), None);
+        if let Err(e) = self.notify_users(&[ctx.user_id, other.id], &frame).await {
+            tracing::warn!(conversation_id = conversation.id, error = %e, "conversation sync notification failed");
         }
         Ok(conversation)
     }
@@ -366,10 +371,19 @@ impl Services {
                     .groups
                     .get_by_conversation(conversation.id)
                     .await?;
+                let remark = match group.as_ref() {
+                    Some(group) => self
+                        .stores
+                        .groups
+                        .get_member(group.id, viewer)
+                        .await?
+                        .and_then(|member| member.remark)
+                        .filter(|remark| !remark.trim().is_empty()),
+                    None => None,
+                };
                 Ok(ConversationIdentity {
-                    title: group
-                        .as_ref()
-                        .map(|g| g.name.clone())
+                    title: remark
+                        .or_else(|| group.as_ref().map(|g| g.name.clone()))
                         .unwrap_or_else(|| "Group".to_string()),
                     avatar_url: None,
                     peer_id: None,

@@ -48,6 +48,20 @@ pub enum ClientFrame {
     Ping,
 }
 
+/// A client-visible data area that changed elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncScope {
+    /// The conversation list (new conversations, titles, membership).
+    Conversations,
+    /// The contact list (accepted/removed contacts, remarks, avatars).
+    Contacts,
+    /// Incoming and outgoing friend requests.
+    Requests,
+    /// Group metadata and membership (roles, mute, rename, dissolve).
+    Groups,
+}
+
 /// A frame sent by the server over WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -88,6 +102,17 @@ pub enum ServerFrame {
         online: bool,
         /// Number of live devices.
         devices: usize,
+    },
+    /// One or more server-side areas changed and the client should refresh.
+    Sync {
+        /// Areas that changed.
+        scopes: Vec<SyncScope>,
+        /// Conversation affected by the change, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<i64>,
+        /// Group affected by the change, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_id: Option<i64>,
     },
     /// Heartbeat reply.
     Pong,

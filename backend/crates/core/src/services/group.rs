@@ -1,11 +1,12 @@
 //! Group chat: roles, membership, permissions, and lifecycle.
 
-use super::{AuthContext, Services};
+use super::{AuthContext, Services, events::sync_frame, normalize_optional_text};
 use crate::error::{Error, Result};
 use crate::model::{
     Conversation, ConversationKind, ConversationMember, Group, GroupMember, GroupRole, Timestamp,
     User,
 };
+use crate::protocol::SyncScope;
 
 /// A group member with profile and role.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -14,6 +15,11 @@ pub struct GroupMemberView {
     pub user: User,
     /// Role.
     pub role: GroupRole,
+    /// Private alias this member uses for the group.
+    ///
+    /// Only populated when the member is the caller; another member's alias is
+    /// private to them.
+    pub remark: Option<String>,
     /// Mute deadline, if muted.
     pub muted_until: Option<Timestamp>,
     /// Join time.
@@ -83,7 +89,22 @@ impl Services {
             self.add_member_internal(group.id, *user_id, role, now)
                 .await?;
         }
-        self.get_group(ctx, group.id).await
+        let view = self.get_group(ctx, group.id).await?;
+        self.sync_group(&view, &[SyncScope::Conversations, SyncScope::Groups])
+            .await;
+        Ok(view)
+    }
+
+    async fn sync_group(&self, view: &GroupView, scopes: &[SyncScope]) {
+        let user_ids: Vec<i64> = view.members.iter().map(|member| member.user.id).collect();
+        let frame = sync_frame(
+            scopes,
+            Some(view.group.conversation_id),
+            Some(view.group.id),
+        );
+        if let Err(e) = self.notify_users(&user_ids, &frame).await {
+            tracing::warn!(group_id = view.group.id, error = %e, "group sync notification failed");
+        }
     }
 
     async fn add_member_internal(
@@ -105,6 +126,7 @@ impl Services {
                 group_id,
                 user_id,
                 role,
+                remark: None,
                 muted_until: None,
                 joined_at: now,
             })
@@ -147,6 +169,11 @@ impl Services {
                 members.push(GroupMemberView {
                     user,
                     role: m.role,
+                    remark: if m.user_id == ctx.user_id {
+                        m.remark
+                    } else {
+                        None
+                    },
                     muted_until: m.muted_until,
                     joined_at: m.joined_at,
                 });
@@ -191,6 +218,9 @@ impl Services {
             .ok_or(Error::NotFound)?;
         group.name = name.to_string();
         self.stores.groups.update(&group).await?;
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Conversations, SyncScope::Groups])
+            .await;
         Ok(group)
     }
 
@@ -213,6 +243,8 @@ impl Services {
             .ok_or(Error::NotFound)?;
         group.invite_policy = policy;
         self.stores.groups.update(&group).await?;
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Groups]).await;
         Ok(group)
     }
 
@@ -248,7 +280,10 @@ impl Services {
             self.add_member_internal(group_id, user.id, GroupRole::Member, now)
                 .await?;
         }
-        self.get_group(ctx, group_id).await
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Conversations, SyncScope::Groups])
+            .await;
+        Ok(view)
     }
 
     /// Kick a member (owner or admin).
@@ -274,7 +309,31 @@ impl Services {
                 "cannot kick an equal or higher role".into(),
             ));
         }
-        self.remove_member_internal(group_id, target.id).await
+        let group = self
+            .stores
+            .groups
+            .get(group_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        self.remove_member_internal(group_id, target.id).await?;
+        let mut audience: Vec<i64> = self
+            .stores
+            .conversations
+            .list_members(group.conversation_id)
+            .await?
+            .into_iter()
+            .map(|member| member.user_id)
+            .collect();
+        audience.push(target.id);
+        let frame = sync_frame(
+            &[SyncScope::Conversations, SyncScope::Groups],
+            Some(group.conversation_id),
+            Some(group_id),
+        );
+        if let Err(e) = self.notify_users(&audience, &frame).await {
+            tracing::warn!(group_id, error = %e, "group sync notification failed");
+        }
+        Ok(())
     }
 
     /// Mute or unmute a member (owner or admin).
@@ -313,6 +372,8 @@ impl Services {
             .conversations
             .set_mute(group.conversation_id, target.id, until)
             .await?;
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Groups]).await;
         Ok(())
     }
 
@@ -343,6 +404,9 @@ impl Services {
         old.role = GroupRole::Admin;
         self.stores.groups.update_member(&old).await?;
         self.stores.groups.set_owner(group_id, new_owner.id).await?;
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Conversations, SyncScope::Groups])
+            .await;
         self.stores
             .groups
             .get(group_id)
@@ -361,7 +425,33 @@ impl Services {
                 ));
             }
         }
-        self.remove_member_internal(group_id, ctx.user_id).await
+        let group = self
+            .stores
+            .groups
+            .get(group_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let mut audience: Vec<i64> = self
+            .stores
+            .groups
+            .list_members(group_id)
+            .await?
+            .into_iter()
+            .map(|member| member.user_id)
+            .collect();
+        self.remove_member_internal(group_id, ctx.user_id).await?;
+        if !audience.contains(&ctx.user_id) {
+            audience.push(ctx.user_id);
+        }
+        let frame = sync_frame(
+            &[SyncScope::Conversations, SyncScope::Groups],
+            Some(group.conversation_id),
+            Some(group_id),
+        );
+        if let Err(e) = self.notify_users(&audience, &frame).await {
+            tracing::warn!(group_id, error = %e, "group sync notification failed");
+        }
+        Ok(())
     }
 
     async fn remove_member_internal(&self, group_id: i64, user_id: i64) -> Result<()> {
@@ -391,6 +481,14 @@ impl Services {
             .get(group_id)
             .await?
             .ok_or(Error::NotFound)?;
+        let audience: Vec<i64> = self
+            .stores
+            .groups
+            .list_members(group_id)
+            .await?
+            .into_iter()
+            .map(|member| member.user_id)
+            .collect();
         for member in self.stores.groups.list_members(group_id).await? {
             self.stores
                 .conversations
@@ -398,7 +496,71 @@ impl Services {
                 .await?;
         }
         self.stores.groups.delete(group_id).await?;
+        let frame = sync_frame(
+            &[SyncScope::Conversations, SyncScope::Groups],
+            Some(group.conversation_id),
+            Some(group_id),
+        );
+        if let Err(e) = self.notify_users(&audience, &frame).await {
+            tracing::warn!(group_id, error = %e, "group sync notification failed");
+        }
         Ok(())
+    }
+
+    /// Promote or demote a group administrator (owner only).
+    pub async fn set_group_member_role(
+        &self,
+        ctx: &AuthContext,
+        group_id: i64,
+        user_id_str: &str,
+        role: GroupRole,
+    ) -> Result<GroupView> {
+        if role == GroupRole::Owner {
+            return Err(Error::Invalid(
+                "use ownership transfer to assign the owner role".into(),
+            ));
+        }
+        let actor = self.actor_member(group_id, ctx.user_id).await?;
+        if actor.role != GroupRole::Owner {
+            return Err(Error::Forbidden("owner role required".into()));
+        }
+        let target = self.get_user_by_user_id(user_id_str).await?;
+        let mut target_member = self
+            .stores
+            .groups
+            .get_member(group_id, target.id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if target_member.role == GroupRole::Owner {
+            return Err(Error::Forbidden("cannot change the owner role".into()));
+        }
+        target_member.role = role;
+        self.stores.groups.update_member(&target_member).await?;
+        let view = self.get_group(ctx, group_id).await?;
+        self.sync_group(&view, &[SyncScope::Groups]).await;
+        Ok(view)
+    }
+
+    /// Set the caller's private alias for a group.
+    pub async fn set_group_remark(
+        &self,
+        ctx: &AuthContext,
+        group_id: i64,
+        remark: Option<String>,
+    ) -> Result<GroupView> {
+        let mut member = self.actor_member(group_id, ctx.user_id).await?;
+        member.remark = normalize_optional_text(remark, self.config.max_group_name_len)?;
+        self.stores.groups.update_member(&member).await?;
+        let view = self.get_group(ctx, group_id).await?;
+        let frame = sync_frame(
+            &[SyncScope::Conversations, SyncScope::Groups],
+            Some(view.group.conversation_id),
+            Some(group_id),
+        );
+        if let Err(e) = self.notify_users(&[ctx.user_id], &frame).await {
+            tracing::warn!(group_id, error = %e, "group sync notification failed");
+        }
+        Ok(view)
     }
 
     /// The set of user ids in a group's conversation (used by fan-out).

@@ -284,6 +284,8 @@ pub struct GroupMember {
     pub user_id: i64,
     /// Role.
     pub role: GroupRole,
+    /// Private alias this member uses for the group in their own lists.
+    pub remark: Option<String>,
     /// Mute deadline, if muted.
     pub muted_until: Option<Timestamp>,
     /// Join time.

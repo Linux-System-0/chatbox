@@ -1,8 +1,9 @@
 //! Direct-chat block list.
 
-use super::{AuthContext, Services};
+use super::{AuthContext, Services, events::sync_frame};
 use crate::error::{Error, Result};
 use crate::model::{Block, Timestamp, User};
+use crate::protocol::SyncScope;
 
 /// A blocked user with their profile.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -31,7 +32,15 @@ impl Services {
             .cache
             .delete(&block_key(ctx.user_id, target.id))
             .await?;
+        self.notify_change(ctx.user_id).await;
         Ok(block)
+    }
+
+    async fn notify_change(&self, user_id: i64) {
+        let frame = sync_frame(&[SyncScope::Contacts], None, None);
+        if let Err(e) = self.notify_users(&[user_id], &frame).await {
+            tracing::warn!(error = %e, "block sync notification failed");
+        }
     }
 
     /// Unblock a user.
@@ -42,6 +51,7 @@ impl Services {
             .cache
             .delete(&block_key(ctx.user_id, target.id))
             .await?;
+        self.notify_change(ctx.user_id).await;
         Ok(())
     }
 

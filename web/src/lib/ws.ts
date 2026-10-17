@@ -13,12 +13,20 @@ export interface ChatMessage {
 	created_at: string;
 }
 
+export type SyncScope = 'conversations' | 'contacts' | 'requests' | 'groups';
+
 export type ServerFrame =
 	| { type: 'ready'; server_time: string }
 	| { type: 'ack'; client_msg_id: string; conversation_id: number; seq: number; message_id: number }
 	| { type: 'message'; message: ChatMessage }
 	| { type: 'message_hint'; conversation_id: number; seq: number }
 	| { type: 'presence'; user_id: number; online: boolean; devices: number }
+	| {
+			type: 'sync';
+			scopes: SyncScope[];
+			conversation_id?: number;
+			group_id?: number;
+		}
 	| { type: 'pong' }
 	| { type: 'error'; code: string; message: string };
 
