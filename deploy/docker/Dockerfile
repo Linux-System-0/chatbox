@@ -4,11 +4,11 @@
 #   docker build -f deploy/docker/Dockerfile -t chatbox-backend .
 
 FROM rust:1.99-slim AS builder
-WORKDIR /app
+WORKDIR /app/backend
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config \
     && rm -rf /var/lib/apt/lists/*
-COPY backend/ ./backend/
+COPY backend/ ./
 RUN cargo build --release --locked -p chatbox-server
 
 FROM debian:bookworm-slim
