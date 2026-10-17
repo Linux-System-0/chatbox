@@ -25,3 +25,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true
+async-trait.workspace = true
+tower = { workspace = true, features = ["util"] }

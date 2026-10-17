@@ -405,7 +405,7 @@ async fn send_message(
     gateway: &Gateway,
     ctx: &AuthContext,
     tx: &mpsc::Sender<ServerFrame>,
-    request: SendRequest,
+    mut request: SendRequest,
 ) -> Result<(), Error> {
     let hook_ctx = HookContext::new(
         "message.before_persist",
@@ -416,14 +416,23 @@ async fn send_message(
             "content": request.content,
         }),
     );
-    if let HookOutcome::Reject(reason) =
-        gateway.plugins.on_message_before_persist(&hook_ctx).await?
-    {
-        let _ = tx.try_send(ServerFrame::Error {
-            code: "rejected".into(),
-            message: reason,
-        });
-        return Ok(());
+    match gateway.plugins.on_message_before_persist(&hook_ctx).await? {
+        HookOutcome::Allow => {}
+        HookOutcome::Reject(reason) => {
+            let _ = tx.try_send(ServerFrame::Error {
+                code: "rejected".into(),
+                message: reason,
+            });
+            return Ok(());
+        }
+        HookOutcome::Rewrite(patch) => {
+            if let Some(kind) = patch.kind {
+                request.kind = kind;
+            }
+            if let Some(content) = patch.content {
+                request.content = Some(content);
+            }
+        }
     }
     let message = gateway.services.send_message(ctx, request).await?;
     let after_ctx = HookContext::new(

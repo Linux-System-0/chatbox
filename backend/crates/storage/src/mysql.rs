@@ -145,7 +145,8 @@ impl MySqlStore {
             blocks: store.clone(),
             attachments: store.clone(),
             outbox: store.clone(),
-            plugins: store,
+            plugins: store.clone(),
+            plugin_kv: store,
         }
     }
 }
@@ -1388,6 +1389,87 @@ impl PluginRepo for MySqlShard {
     }
 }
 
+#[async_trait]
+impl PluginKvRepo for MySqlShard {
+    async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>> {
+        let value: Option<String> = sqlx::query_scalar(
+            "SELECT v FROM plugin_kv
+             WHERE plugin = ? AND k = ? AND (expires_at IS NULL OR expires_at > ?)",
+        )
+        .bind(plugin)
+        .bind(key)
+        .bind(naive(Utc::now()))
+        .fetch_optional(self.read_pool())
+        .await
+        .map_err(Error::storage)?;
+        Ok(value)
+    }
+
+    async fn set(
+        &self,
+        plugin: &str,
+        key: &str,
+        value: &str,
+        expires_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO plugin_kv (plugin, k, v, expires_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE v = VALUES(v), expires_at = VALUES(expires_at),
+                                     updated_at = VALUES(updated_at)",
+        )
+        .bind(plugin)
+        .bind(key)
+        .bind(value)
+        .bind(expires_at.map(naive))
+        .bind(naive(at))
+        .execute(&self.pool)
+        .await
+        .map_err(Error::storage)?;
+        Ok(())
+    }
+
+    async fn delete(&self, plugin: &str, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM plugin_kv WHERE plugin = ? AND k = ?")
+            .bind(plugin)
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(Error::storage)?;
+        Ok(())
+    }
+
+    async fn list(&self, plugin: &str, prefix: &str) -> Result<Vec<(String, String)>> {
+        let pattern = format!(
+            "{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let rows = sqlx::query(
+            "SELECT k, v FROM plugin_kv
+             WHERE plugin = ? AND k LIKE ? AND (expires_at IS NULL OR expires_at > ?)
+             ORDER BY k LIMIT 1000",
+        )
+        .bind(plugin)
+        .bind(pattern)
+        .bind(naive(Utc::now()))
+        .fetch_all(self.read_pool())
+        .await
+        .map_err(Error::storage)?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("k").map_err(Error::storage)?,
+                    row.try_get("v").map_err(Error::storage)?,
+                ))
+            })
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sharded dispatcher
 //
@@ -1931,6 +2013,33 @@ impl PluginRepo for MySqlStore {
 
     async fn list(&self) -> Result<Vec<(String, bool)>> {
         PluginRepo::list(&self.shards[0]).await
+    }
+}
+
+#[async_trait]
+impl PluginKvRepo for MySqlStore {
+    // Plugin state is global and low-volume; it lives on the first shard.
+    async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>> {
+        PluginKvRepo::get(&self.shards[0], plugin, key).await
+    }
+
+    async fn set(
+        &self,
+        plugin: &str,
+        key: &str,
+        value: &str,
+        expires_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> Result<()> {
+        PluginKvRepo::set(&self.shards[0], plugin, key, value, expires_at, at).await
+    }
+
+    async fn delete(&self, plugin: &str, key: &str) -> Result<()> {
+        PluginKvRepo::delete(&self.shards[0], plugin, key).await
+    }
+
+    async fn list(&self, plugin: &str, prefix: &str) -> Result<Vec<(String, String)>> {
+        PluginKvRepo::list(&self.shards[0], plugin, prefix).await
     }
 }
 

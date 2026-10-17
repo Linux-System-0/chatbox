@@ -1,0 +1,8 @@
+{
+  "name": "pii-redactor",
+  "version": "1.0.0",
+  "kind": "server",
+  "api_version": 2,
+  "entry": "libchatbox_plugin_redactor.so",
+  "description": "Replace email addresses with [email] before persisting a message"
+}

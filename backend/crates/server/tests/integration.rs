@@ -37,6 +37,7 @@ fn harness() -> Harness {
         attachments: memory.clone(),
         outbox: memory.clone(),
         plugins: memory.clone(),
+        plugin_kv: memory.clone(),
     };
     let infra = Infra {
         cache: memory.clone(),

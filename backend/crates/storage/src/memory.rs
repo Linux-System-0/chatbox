@@ -39,6 +39,7 @@ struct MemoryState {
     attachments: HashMap<i64, Attachment>,
     outbox: BTreeMap<i64, OutboxEvent>,
     plugin_states: HashMap<String, bool>,
+    plugin_kv: HashMap<(String, String), (String, Option<Instant>)>,
     cache: HashMap<String, (String, Instant)>,
     presence: HashSet<i64>,
     registry: HashMap<i64, Vec<ConnectionInfo>>,
@@ -718,6 +719,65 @@ impl PluginRepo for MemoryStore {
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect())
+    }
+}
+
+#[async_trait]
+impl PluginKvRepo for MemoryStore {
+    async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>> {
+        let mut st = self.lock();
+        let state_key = (plugin.to_string(), key.to_string());
+        if st
+            .plugin_kv
+            .get(&state_key)
+            .and_then(|(_, expires)| *expires)
+            .is_some_and(|expires| expires <= Instant::now())
+        {
+            st.plugin_kv.remove(&state_key);
+            return Ok(None);
+        }
+        Ok(st.plugin_kv.get(&state_key).map(|(value, _)| value.clone()))
+    }
+
+    async fn set(
+        &self,
+        plugin: &str,
+        key: &str,
+        value: &str,
+        expires_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> Result<()> {
+        let expires = expires_at.map(|expires_at| {
+            let ttl = (expires_at - at).to_std().unwrap_or_default();
+            Instant::now() + ttl
+        });
+        self.lock().plugin_kv.insert(
+            (plugin.to_string(), key.to_string()),
+            (value.to_string(), expires),
+        );
+        Ok(())
+    }
+
+    async fn delete(&self, plugin: &str, key: &str) -> Result<()> {
+        self.lock()
+            .plugin_kv
+            .remove(&(plugin.to_string(), key.to_string()));
+        Ok(())
+    }
+
+    async fn list(&self, plugin: &str, prefix: &str) -> Result<Vec<(String, String)>> {
+        let mut st = self.lock();
+        let now = Instant::now();
+        st.plugin_kv
+            .retain(|_, (_, expires)| expires.is_none_or(|expires| expires > now));
+        let mut rows: Vec<(String, String)> = st
+            .plugin_kv
+            .iter()
+            .filter(|((owner, key), _)| owner == plugin && key.starts_with(prefix))
+            .map(|((_, key), (value, _))| (key.clone(), value.clone()))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(rows)
     }
 }
 

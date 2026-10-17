@@ -277,7 +277,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chatbox-core",
+ "chatbox-storage",
  "chrono",
+ "futures",
  "libloading",
  "serde",
  "serde_json",
@@ -308,6 +310,7 @@ name = "chatbox-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chatbox-api",
  "chatbox-core",
@@ -321,6 +324,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

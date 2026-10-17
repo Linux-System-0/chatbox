@@ -49,7 +49,15 @@ async fn main() -> Result<()> {
     });
 
     // Plugin host.
-    let plugins = Arc::new(PluginHost::new(backend.stores.plugins.clone()));
+    let plugin_host = Arc::new(chatbox_plugin::ServerHost::new(
+        backend.stores.clone(),
+        Arc::new(SystemClock),
+    ));
+    let plugins = Arc::new(
+        PluginHost::new(backend.stores.plugins.clone())
+            .with_host(plugin_host)
+            .with_timeout(config.plugin_hook_timeout()),
+    );
     plugins.register(Arc::new(AuditLogPlugin)).await;
     plugins
         .register(Arc::new(MessageGuardPlugin::new(

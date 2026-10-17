@@ -228,6 +228,29 @@ pub trait PluginRepo: Send + Sync {
     async fn list(&self) -> Result<Vec<(String, bool)>>;
 }
 
+/// Server plugin key/value persistence.
+///
+/// Entries are namespaced by plugin name so a plugin can only reach its own
+/// state. The host enforces key and value size limits before calling in.
+#[async_trait]
+pub trait PluginKvRepo: Send + Sync {
+    /// Fetch a value, treating expired entries as absent.
+    async fn get(&self, plugin: &str, key: &str) -> Result<Option<String>>;
+    /// Insert or replace a value, optionally with an absolute expiry.
+    async fn set(
+        &self,
+        plugin: &str,
+        key: &str,
+        value: &str,
+        expires_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> Result<()>;
+    /// Delete a value.
+    async fn delete(&self, plugin: &str, key: &str) -> Result<()>;
+    /// List live entries whose key starts with `prefix`, ordered by key.
+    async fn list(&self, plugin: &str, prefix: &str) -> Result<Vec<(String, String)>>;
+}
+
 /// All repository ports bundled for injection into services.
 #[derive(Clone)]
 pub struct Stores {
@@ -255,4 +278,6 @@ pub struct Stores {
     pub outbox: Arc<dyn OutboxRepo>,
     /// Plugin repository.
     pub plugins: Arc<dyn PluginRepo>,
+    /// Plugin key/value repository.
+    pub plugin_kv: Arc<dyn PluginKvRepo>,
 }

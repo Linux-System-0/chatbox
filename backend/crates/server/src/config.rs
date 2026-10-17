@@ -38,6 +38,8 @@ pub struct Config {
     pub fanout_write_max_members: u64,
     /// Blocked words enforced by the built-in message guard.
     pub guard_words: Vec<String>,
+    /// Deadline for one server-plugin hook call; zero disables it.
+    pub plugin_hook_timeout_ms: u64,
 }
 
 impl Config {
@@ -75,6 +77,10 @@ impl Config {
             .parse::<u64>()
             .context("FANOUT_WRITE_MAX_MEMBERS must be an integer")?;
 
+        let plugin_hook_timeout_ms = env_or("PLUGIN_HOOK_TIMEOUT_MS", "500")
+            .parse::<u64>()
+            .context("PLUGIN_HOOK_TIMEOUT_MS must be an integer")?;
+
         let guard_words = std::env::var("MESSAGE_GUARD_WORDS")
             .unwrap_or_default()
             .split(',')
@@ -97,7 +103,16 @@ impl Config {
             admin_user_ids,
             fanout_write_max_members,
             guard_words,
+            plugin_hook_timeout_ms,
         })
+    }
+
+    /// The hook deadline, or `None` when it is disabled.
+    pub fn plugin_hook_timeout(&self) -> Option<std::time::Duration> {
+        match self.plugin_hook_timeout_ms {
+            0 => None,
+            ms => Some(std::time::Duration::from_millis(ms)),
+        }
     }
 
     /// Build the storage backend configuration.

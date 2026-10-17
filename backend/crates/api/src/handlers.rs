@@ -401,7 +401,7 @@ pub async fn send_message(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
     Path(id): Path<i64>,
-    Json(body): Json<SendMessageBody>,
+    Json(mut body): Json<SendMessageBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     rate_limit(&state, format!("send:{}", ctx.user_id), 120, 60).await?;
     let hook = HookContext::new(
@@ -413,8 +413,17 @@ pub async fn send_message(
             "content": body.content,
         }),
     );
-    if let HookOutcome::Reject(reason) = state.plugins.on_message_before_persist(&hook).await? {
-        return Err(Error::Forbidden(reason).into());
+    match state.plugins.on_message_before_persist(&hook).await? {
+        HookOutcome::Allow => {}
+        HookOutcome::Reject(reason) => return Err(Error::Forbidden(reason).into()),
+        HookOutcome::Rewrite(patch) => {
+            if let Some(kind) = patch.kind {
+                body.kind = kind;
+            }
+            if let Some(content) = patch.content {
+                body.content = Some(content);
+            }
+        }
     }
     let message = state
         .services
