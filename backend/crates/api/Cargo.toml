@@ -1,0 +1,20 @@
+[package]
+name = "chatbox-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ChatBox HTTP/REST control plane"
+
+[dependencies]
+chatbox-core.workspace = true
+chatbox-plugin.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
