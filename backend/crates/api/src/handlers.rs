@@ -617,7 +617,7 @@ pub async fn list_blocks(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let blocks = state.services.list_blocks(&ctx).await?;
+    let blocks = state.services.list_blocked_users(&ctx).await?;
     Ok(Json(serde_json::json!({ "blocks": blocks })))
 }
 

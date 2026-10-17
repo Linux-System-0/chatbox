@@ -21,6 +21,7 @@ use crate::port::Stores;
 use crate::tokens::TokenManager;
 
 pub use auth::{AuthContext, AuthTokens, LoginInput, RegisterInput};
+pub use block::BlockView;
 pub use group::{GroupMemberView, GroupView};
 pub use messaging::{ConversationView, SendRequest};
 pub use search::wildcard_to_regex;

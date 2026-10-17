@@ -2,7 +2,16 @@
 
 use super::{AuthContext, Services};
 use crate::error::{Error, Result};
-use crate::model::Block;
+use crate::model::{Block, Timestamp, User};
+
+/// A blocked user with their profile.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlockView {
+    /// The blocked user.
+    pub user: User,
+    /// When the block was created.
+    pub created_at: Timestamp,
+}
 
 impl Services {
     /// Block a user. Blocking is idempotent.
@@ -34,6 +43,21 @@ impl Services {
             .delete(&block_key(ctx.user_id, target.id))
             .await?;
         Ok(())
+    }
+
+    /// List the caller's blocks with profiles.
+    pub async fn list_blocked_users(&self, ctx: &AuthContext) -> Result<Vec<BlockView>> {
+        let blocks = self.stores.blocks.list(ctx.user_id).await?;
+        let mut views = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            if let Some(user) = self.stores.users.get(block.blocked_id).await? {
+                views.push(BlockView {
+                    user,
+                    created_at: block.created_at,
+                });
+            }
+        }
+        Ok(views)
     }
 
     /// List the caller's blocks.
