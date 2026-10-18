@@ -10,6 +10,7 @@ import com.chatbox.android.data.ChatBoxApi
 import com.chatbox.android.data.ConversationView
 import com.chatbox.android.data.LoginRequest
 import com.chatbox.android.data.Message
+import com.chatbox.android.data.ReadCursorView
 import com.chatbox.android.data.ReadRequest
 import com.chatbox.android.data.RefreshRequest
 import com.chatbox.android.data.RegisterRequest
@@ -71,6 +72,7 @@ data class ChatUiState(
 	val status: String = "offline",
 	val locale: String = "en",
 	val theme: String = "system",
+	val timeSettings: TimeDisplaySettings = TimeDisplaySettings(),
 	val plugins: List<ClientPlugin> = emptyList(),
 	val error: String? = null,
 	val busy: Boolean = false,
@@ -91,6 +93,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	private val sessionStore = SessionStore(application)
 	private val policyStore = NetworkPolicyStore(application)
 	private val pluginStore = ClientPluginStore(application)
+	private val timeStore = TimeSettingsStore(application)
 	private val _state = MutableStateFlow(ChatUiState())
 	val state: StateFlow<ChatUiState> = _state.asStateFlow()
 	private var client: OkHttpClient? = null
@@ -480,9 +483,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 				}
 				socket?.acknowledge(message.conversationId, message.seq)
 			}
+			is ServerFrame.Ready -> refresh()
+			is ServerFrame.Read -> applyReadCursor(frame.conversationId, frame.userId, frame.seq)
 			is ServerFrame.Hint -> select(frame.conversationId)
 			is ServerFrame.Failure -> _state.update { it.copy(error = frame.message) }
 			else -> Unit
+		}
+	}
+
+	private fun applyReadCursor(conversationId: Long, userId: Long, seq: Long) {
+		_state.update { current ->
+			val conversations = current.conversations.map { conversation ->
+				if (conversation.id != conversationId) {
+					conversation
+				} else {
+					val cursors = conversation.readCursors.toMutableList()
+					val index = cursors.indexOfFirst { it.userId == userId }
+					if (index >= 0) {
+						if (seq > cursors[index].lastReadSeq) {
+							cursors[index] = cursors[index].copy(lastReadSeq = seq)
+						}
+					} else {
+						cursors += ReadCursorView(userId, seq)
+					}
+					val ownRead = if (userId == current.session?.user?.id) {
+						maxOf(conversation.lastReadSeq, seq)
+					} else {
+						conversation.lastReadSeq
+					}
+					conversation.copy(readCursors = cursors, lastReadSeq = ownRead)
+				}
+			}
+			current.copy(conversations = conversations)
 		}
 	}
 
@@ -538,6 +570,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 				messages = emptyList(),
 				selectedId = null,
 				status = "offline",
+				timeSettings = TimeDisplaySettings(),
 				error = null,
 				busy = false,
 			)
@@ -552,6 +585,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 	fun setTheme(theme: String) {
 		_state.update { it.copy(theme = theme) }
 		_state.value.session?.let { pluginStore.setActiveTheme(it.user.userId, theme) }
+	}
+
+	fun setTimeSettings(settings: TimeDisplaySettings) {
+		val session = _state.value.session ?: return
+		val next = normalizeTimeSettings(settings)
+		timeStore.save(session.user.id, next)
+		_state.update { it.copy(timeSettings = next) }
+	}
+
+	fun resetTimeSettings() {
+		val session = _state.value.session ?: return
+		timeStore.reset(session.user.id)
+		_state.update { it.copy(timeSettings = TimeDisplaySettings()) }
 	}
 
 	/** Install a plugin file chosen with the system file picker. */
@@ -630,7 +676,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 		} ?: ClientPlugins.DEFAULT_THEME
 		pluginStore.setActiveLocale(userId, locale)
 		pluginStore.setActiveTheme(userId, theme)
-		_state.update { it.copy(plugins = plugins, locale = locale, theme = theme) }
+		_state.update {
+			it.copy(
+				plugins = plugins,
+				locale = locale,
+				theme = theme,
+				timeSettings = timeStore.load(session.user.id),
+			)
+		}
 	}
 
 	fun dismissError() = _state.update { it.copy(error = null) }

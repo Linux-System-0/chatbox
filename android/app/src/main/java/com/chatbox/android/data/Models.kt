@@ -46,12 +46,19 @@ data class Message(
 )
 
 @Serializable
+data class ReadCursorView(
+	@SerialName("user_id") val userId: Long,
+	@SerialName("last_read_seq") val lastReadSeq: Long = 0,
+)
+
+@Serializable
 data class ConversationView(
 	val id: Long,
 	val kind: String,
 	val title: String,
 	@SerialName("last_message") val lastMessage: Message? = null,
 	@SerialName("last_read_seq") val lastReadSeq: Long = 0,
+	@SerialName("read_cursors") val readCursors: List<ReadCursorView> = emptyList(),
 	val unread: Long = 0,
 )
 

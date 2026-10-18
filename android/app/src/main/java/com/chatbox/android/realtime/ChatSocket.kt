@@ -24,6 +24,7 @@ sealed interface ServerFrame {
 	data class Ready(val serverTime: String) : ServerFrame
 	data class Ack(val clientMsgId: String, val conversationId: Long, val seq: Long) : ServerFrame
 	data class Incoming(val message: Message) : ServerFrame
+	data class Read(val conversationId: Long, val userId: Long, val seq: Long) : ServerFrame
 	data class Hint(val conversationId: Long, val seq: Long) : ServerFrame
 	data class Presence(val userId: Long, val online: Boolean, val devices: Int) : ServerFrame
 	data class Failure(val code: String, val message: String) : ServerFrame
@@ -138,6 +139,11 @@ class ChatSocket(
 			)
 			"message" -> ServerFrame.Incoming(
 				json.decodeFromJsonElement(Message.serializer(), root["message"]!!.jsonObject),
+			)
+			"read" -> ServerFrame.Read(
+				root["conversation_id"]?.jsonPrimitive?.long ?: 0L,
+				root["user_id"]?.jsonPrimitive?.long ?: 0L,
+				root["seq"]?.jsonPrimitive?.long ?: 0L,
 			)
 			"message_hint" -> ServerFrame.Hint(
 				root["conversation_id"]?.jsonPrimitive?.long ?: 0L,

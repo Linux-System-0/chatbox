@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -32,9 +33,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.chatbox.android.data.ConversationView
+import com.chatbox.android.data.Message
 import com.chatbox.android.plugins.ClientPlugins
 import java.text.DateFormat
 import java.util.Date
@@ -48,6 +53,7 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel, onOpenNetworkSettin
 	var languageMenu by remember { mutableStateOf(false) }
 	var themeMenu by remember { mutableStateOf(false) }
 	var pluginDialog by remember { mutableStateOf(false) }
+	var timeSettingsDialog by remember { mutableStateOf(false) }
 	val installLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
 		uri?.let(viewModel::installPlugin)
 	}
@@ -67,6 +73,10 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel, onOpenNetworkSettin
 					}
 				},
 				actions = {
+					TextButton(
+						onClick = { timeSettingsDialog = true },
+						modifier = Modifier.semantics { contentDescription = tr("time_settings") },
+					) { Text("🕒") }
 					TextButton(onClick = onOpenNetworkSettings) { Text("⚙") }
 					Box {
 						TextButton(onClick = { languageMenu = true }) { Text("🌐 ${state.locale}") }
@@ -186,6 +196,22 @@ fun ChatScreen(state: ChatUiState, viewModel: ChatViewModel, onOpenNetworkSettin
 			tr = tr,
 		)
 	}
+
+	if (timeSettingsDialog) {
+		TimeSettingsDialog(
+			settings = state.timeSettings,
+			onSave = {
+				viewModel.setTimeSettings(it)
+				timeSettingsDialog = false
+			},
+			onReset = {
+				viewModel.resetTimeSettings()
+				timeSettingsDialog = false
+			},
+			onClose = { timeSettingsDialog = false },
+			tr = tr,
+		)
+	}
 }
 
 @Composable
@@ -197,6 +223,8 @@ private fun ConversationList(
 	onSelect: (Long) -> Unit,
 	tr: (String) -> String,
 ) {
+	val conversation = state.conversations.firstOrNull { it.id == state.selectedId }
+	val myId = state.session?.user?.id
 	Column(modifier = Modifier.fillMaxSize()) {
 		Row(
 			modifier = Modifier.fillMaxWidth().padding(8.dp),
@@ -223,7 +251,21 @@ private fun ConversationList(
 					verticalAlignment = Alignment.CenterVertically,
 				) {
 					Column(modifier = Modifier.weight(1f)) {
-						Text(conversation.title, style = MaterialTheme.typography.titleMedium)
+						Row(verticalAlignment = Alignment.CenterVertically) {
+							Text(
+								conversation.title,
+								style = MaterialTheme.typography.titleMedium,
+								maxLines = 1,
+								overflow = TextOverflow.Ellipsis,
+								modifier = Modifier.weight(1f),
+							)
+							conversation.lastMessage?.let { message ->
+								Text(
+									TimeFormat.format(message.createdAt, state.timeSettings),
+									style = MaterialTheme.typography.labelSmall,
+								)
+							}
+						}
 						Text(
 							conversation.lastMessage?.content ?: "",
 							style = MaterialTheme.typography.bodySmall,
@@ -253,6 +295,8 @@ private fun MessagePane(
 	onSend: () -> Unit,
 	tr: (String) -> String,
 ) {
+	val conversation = state.conversations.firstOrNull { it.id == state.selectedId }
+	val myId = state.session?.user?.id
 	Column(modifier = Modifier.fillMaxSize()) {
 		Row(
 			modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -270,13 +314,13 @@ private fun MessagePane(
 			verticalArrangement = Arrangement.spacedBy(6.dp),
 		) {
 			items(state.messages, key = { it.id }) { message ->
-				val mine = message.senderId == state.session?.user?.id
+				val mine = message.senderId == myId
+				val receipt = if (mine) readReceipt(conversation, message, myId, tr) else null
 				Row(
 					modifier = Modifier.fillMaxWidth(),
 					horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
 				) {
-					Text(
-						text = message.content ?: "[${message.kind}]",
+					Column(
 						modifier = Modifier
 							.width(280.dp)
 							.clip(RoundedCornerShape(10.dp))
@@ -285,7 +329,33 @@ private fun MessagePane(
 								else MaterialTheme.colorScheme.surfaceVariant,
 							)
 							.padding(8.dp),
-					)
+					) {
+						Text(message.content ?: "[${message.kind}]")
+						Row(
+							modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+							horizontalArrangement = Arrangement.End,
+							verticalAlignment = Alignment.CenterVertically,
+						) {
+							Text(
+								TimeFormat.format(message.createdAt, state.timeSettings),
+								style = MaterialTheme.typography.labelSmall,
+								color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
+								else MaterialTheme.colorScheme.onSurfaceVariant,
+							)
+							receipt?.let {
+								Text(
+									if (it.read) "✓✓" else "✓",
+									style = MaterialTheme.typography.labelSmall,
+									color = if (it.read) Color(0xFF12B76A)
+									else if (mine) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.65f)
+									else MaterialTheme.colorScheme.onSurfaceVariant,
+									modifier = Modifier
+										.padding(start = 4.dp)
+										.semantics { contentDescription = it.label },
+								)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -305,4 +375,30 @@ private fun MessagePane(
 			TextButton(onClick = onSend) { Text(tr("send")) }
 		}
 	}
+}
+
+
+private data class ReadReceipt(val read: Boolean, val label: String)
+
+private fun readReceipt(
+	conversation: ConversationView?,
+	message: Message,
+	myId: Long?,
+	tr: (String) -> String,
+): ReadReceipt? {
+	if (conversation == null) return null
+	val others = conversation.readCursors.filter { it.userId != myId }
+	if (conversation.kind == "direct") {
+		val peer = others.firstOrNull() ?: return ReadReceipt(false, tr("unread"))
+		val read = peer.lastReadSeq >= message.seq
+		return ReadReceipt(read, if (read) tr("read") else tr("unread"))
+	}
+	if (others.isEmpty()) return ReadReceipt(true, tr("read"))
+	val read = others.count { it.lastReadSeq >= message.seq }
+	return ReadReceipt(
+		read == others.size,
+		tr("read_by_count")
+			.replace("{read}", read.toString())
+			.replace("{total}", others.size.toString()),
+	)
 }
