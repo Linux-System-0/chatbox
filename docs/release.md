@@ -78,7 +78,12 @@ artifacts:
 | `chatbox-server-arm64-unknown-linux` | `aarch64-unknown-linux-gnu` | `cargo zigbuild --release --locked` |
 
 `cargo-zigbuild` cross-compiles to `aarch64` without a system toolchain, so the
-ARM64 binary is produced on a plain `ubuntu-latest` runner. Both binaries are
+ARM64 binary is produced on a plain `ubuntu-24.04` runner. The jobs pin that
+image instead of `ubuntu-latest`: the native x86_64 binary links the runner's
+glibc, so a silent image rollover (GitHub moves the `-latest` alias to a new
+Ubuntu release) would raise the minimum glibc for everyone using the released
+binary. Adopting a newer image is therefore a deliberate change, made together
+with the release notes. Both binaries are
 stripped afterwards with the `llvm-strip` shipped by the Rust `llvm-tools`
 component, which is target-agnostic and therefore also handles the zigbuild
 artifact.

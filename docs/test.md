@@ -68,6 +68,10 @@ prefixes the called job with the caller job, so the check there is named
 `verify / Verify sources`. Branch protection only needs to require `Verify
 sources`; the prefixed form exists only inside release runs.
 
+The job pins `ubuntu-24.04` rather than `ubuntu-latest` so that a GitHub image
+rollover cannot silently change the toolchain the gate approves — and, because
+`release.yml` calls this same workflow, the image a release must pass in.
+
 ## Reuse and manual runs
 
 The workflow is called with:
