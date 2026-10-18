@@ -19,6 +19,7 @@ export type ServerFrame =
 	| { type: 'ready'; server_time: string }
 	| { type: 'ack'; client_msg_id: string; conversation_id: number; seq: number; message_id: number }
 	| { type: 'message'; message: ChatMessage }
+	| { type: 'read'; conversation_id: number; user_id: number; seq: number }
 	| { type: 'message_hint'; conversation_id: number; seq: number }
 	| { type: 'presence'; user_id: number; online: boolean; devices: number }
 	| {

@@ -5,13 +5,16 @@
 	import Avatar from '$lib/Avatar.svelte';
 	import PluginManager from '$lib/PluginManager.svelte';
 	import ProfileDialog from '$lib/ProfileDialog.svelte';
+	import TimeSettingsDialog from '$lib/TimeSettingsDialog.svelte';
 	import { locale, languages, resetLocale, setLocale, syncLocale, translator } from '$lib/i18n';
 	import { applyTheme, resetTheme, setTheme, syncTheme, theme, themes } from '$lib/theme';
 	import { clearPlugins, loadPluginsFor } from '$lib/plugins';
 	import { clearSession, loadSession, session } from '$lib/session';
+	import { loadTimeSettings, resetTimeSettings } from '$lib/time';
 
 	let showPlugins = false;
 	let showProfile = false;
+	let showTimeSettings = false;
 	let loadedUserId: string | null = null;
 
 	onMount(() => {
@@ -36,11 +39,14 @@
 				loadPluginsFor(userId);
 				syncLocale(userId);
 				syncTheme(userId);
+				loadTimeSettings($session?.user.id ?? null);
 			} else if (wasSignedIn) {
 				showPlugins = false;
+				showTimeSettings = false;
 				clearPlugins();
 				resetLocale();
 				resetTheme();
+				resetTimeSettings(null);
 			}
 		}
 	}
@@ -95,6 +101,16 @@
 					{/each}
 				</select>
 			</label>
+			{#if $session}
+				<button
+					class="ghost time-button"
+					on:click={() => (showTimeSettings = true)}
+					aria-label={tr('time_settings')}
+					title={tr('time_settings')}
+				>
+					🕒
+				</button>
+			{/if}
 		</div>
 
 		{#if $session}
@@ -141,6 +157,10 @@
 
 	{#if showProfile && $session}
 		<ProfileDialog onClose={() => (showProfile = false)} />
+	{/if}
+
+	{#if showTimeSettings && $session}
+		<TimeSettingsDialog onClose={() => (showTimeSettings = false)} />
 	{/if}
 </div>
 

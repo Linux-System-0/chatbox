@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import Avatar from '$lib/Avatar.svelte';
 	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
@@ -7,6 +8,7 @@
 	import { effectiveAvatar, effectiveName, fileToAvatar } from '$lib/avatar';
 	import { translator } from '$lib/i18n';
 	import { loadSession, session, type User } from '$lib/session';
+	import { dayKey, formatDay, formatTimestamp, timeSettings, type TimeSettings } from '$lib/time';
 	import {
 		ChatSocket,
 		type ChatMessage,
@@ -25,7 +27,16 @@
 		member_count: number;
 		last_message: ChatMessage | null;
 		last_read_seq: number;
+		read_cursors: ReadCursor[];
 		unread: number;
+	}
+	interface ReadCursor {
+		user_id: number;
+		last_read_seq: number;
+	}
+	interface ReadReceipt {
+		read: boolean;
+		label: string;
 	}
 	interface ContactView {
 		user: User;
@@ -91,6 +102,7 @@
 	let requests: FriendRequest[] = [];
 	let blocks: BlockView[] = [];
 	let messages: ChatMessage[] = [];
+	let readCursors: Record<number, number> = {};
 	let presence: Record<number, boolean> = {};
 	let selected: number | null = null;
 	let draft = '';
@@ -140,7 +152,10 @@
 	$: pendingRequests = requests.filter((r) => r.status === 'pending');
 	$: incomingRequests = pendingRequests.filter((r) => r.to_id === myId);
 	$: outgoingRequests = pendingRequests.filter((r) => r.from_id === myId);
-	$: messageItems = buildMessageItems(messages, myId, tr);
+	$: messageItems = buildMessageItems(messages, myId, tr, $timeSettings);
+	$: otherReadCursors = Object.entries(readCursors)
+		.map(([id, seq]) => ({ user_id: Number(id), seq }))
+		.filter((cursor) => cursor.user_id !== myId);
 	$: myGroupMember = groupInfo?.members.find((member) => member.user.id === myId) ?? null;
 	$: canManageGroup =
 		myGroupMember?.role === 'owner' || myGroupMember?.role === 'admin';
@@ -173,8 +188,10 @@
 
 	onDestroy(() => {
 		socket?.close();
-		document.removeEventListener('visibilitychange', onForeground);
-		window.removeEventListener('focus', onForeground);
+		if (browser) {
+			document.removeEventListener('visibilitychange', onForeground);
+			window.removeEventListener('focus', onForeground);
+		}
 		if (syncTimer) clearTimeout(syncTimer);
 		if (pollTimer) clearInterval(pollTimer);
 	});
@@ -188,7 +205,8 @@
 	function buildMessageItems(
 		list: ChatMessage[],
 		selfId: number | undefined,
-		t: (key: string) => string
+		t: (key: string) => string,
+		settings: TimeSettings
 	): MessageItem[] {
 		const items: MessageItem[] = [];
 		for (let i = 0; i < list.length; i += 1) {
@@ -206,13 +224,16 @@
 				next?.kind !== 'system' &&
 				next?.sender_id === message.sender_id &&
 				closeInTime(message.created_at, next.created_at);
-			const dayChanged = !previous || dayKey(previous.created_at) !== dayKey(message.created_at);
+			const dayChanged = !previous || dayKey(previous.created_at, settings) !== dayKey(message.created_at, settings);
 			items.push({
 				message,
 				mine: message.sender_id === selfId,
 				head: !joinsPrevious,
 				tail: !joinsNext,
-				day: dayChanged && message.kind !== 'system' ? formatDay(message.created_at, t) : null
+				day:
+					dayChanged && message.kind !== 'system'
+						? formatDay(message.created_at, settings, t('today'), t('yesterday'))
+						: null
 			});
 		}
 		return items;
@@ -222,22 +243,60 @@
 		return Math.abs(new Date(b).getTime() - new Date(a).getTime()) < 5 * 60 * 1000;
 	}
 
-	function dayKey(value: string | Date): string {
-		const date = value instanceof Date ? value : new Date(value);
-		return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+	function displayTime(value: string): string {
+		return formatTimestamp(value, $timeSettings);
 	}
 
-	function formatDay(value: string, t: (key: string) => string): string {
-		const date = new Date(value);
-		if (dayKey(date) === dayKey(new Date())) return t('today');
-		const yesterday = new Date();
-		yesterday.setDate(yesterday.getDate() - 1);
-		if (dayKey(date) === dayKey(yesterday)) return t('yesterday');
-		return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	function readCursorMap(conversation: ConversationView | null): Record<number, number> {
+		const cursors: Record<number, number> = {};
+		for (const cursor of conversation?.read_cursors ?? []) {
+			cursors[cursor.user_id] = cursor.last_read_seq;
+		}
+		return cursors;
 	}
 
-	function shortTime(value: string): string {
-		return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+	function applyReadCursor(conversationId: number, userId: number, seq: number) {
+		const conversation = conversations.find((item) => item.id === conversationId);
+		if (conversation) {
+			const cursors = [...(conversation.read_cursors ?? [])];
+			const index = cursors.findIndex((cursor) => cursor.user_id === userId);
+			if (index >= 0) {
+				cursors[index] = {
+					...cursors[index],
+					last_read_seq: Math.max(cursors[index].last_read_seq, seq)
+				};
+			} else {
+				cursors.push({ user_id: userId, last_read_seq: seq });
+			}
+			conversation.read_cursors = cursors;
+			if (userId === myId) {
+				conversation.last_read_seq = Math.max(conversation.last_read_seq, seq);
+			}
+			conversations = [...conversations];
+		}
+		if (conversationId === selected) {
+			readCursors = { ...readCursors, [userId]: Math.max(readCursors[userId] ?? 0, seq) };
+		}
+	}
+
+	function receiptFor(message: ChatMessage): ReadReceipt | null {
+		if (!selectedConversation) return null;
+		if (selectedConversation.kind === 'direct') {
+			const peer = selectedConversation.peer_id;
+			if (!peer) return null;
+			const read = (readCursors[peer] ?? 0) >= message.seq;
+			return { read, label: read ? tr('read') : tr('unread') };
+		}
+		if (otherReadCursors.length === 0) {
+			return { read: true, label: tr('read') };
+		}
+		const read = otherReadCursors.filter((cursor) => cursor.seq >= message.seq).length;
+		return {
+			read: read === otherReadCursors.length,
+			label: tr('read_by_count')
+				.replace('{read}', String(read))
+				.replace('{total}', String(otherReadCursors.length))
+		};
 	}
 
 	function previewOf(
@@ -376,10 +435,13 @@
 					messages = [];
 					groupInfo = null;
 					showGroupInfo = false;
-				} else if (conversation.kind === 'group') {
-					await loadGroupInfo(conversation);
 				} else {
-					groupInfo = null;
+					readCursors = readCursorMap(conversation);
+					if (conversation.kind === 'group') {
+						await loadGroupInfo(conversation);
+					} else {
+						groupInfo = null;
+					}
 				}
 			}
 		} catch (e) {
@@ -421,6 +483,7 @@
 			const conv = conversations.find((c) => c.id === id);
 			if (conv) {
 				conv.unread = 0;
+				readCursors = readCursorMap(conv);
 				conversations = [...conversations];
 			}
 			if (conv?.kind === 'group') {
@@ -460,6 +523,8 @@
 			} else {
 				scheduleSync(['conversations']);
 			}
+		} else if (frame.type === 'read') {
+			applyReadCursor(frame.conversation_id, frame.user_id, frame.seq);
 		} else if (frame.type === 'presence') {
 			presence = { ...presence, [frame.user_id]: frame.online };
 		} else if (frame.type === 'sync') {
@@ -511,6 +576,7 @@
 			const conv = conversations.find((item) => item.id === conversationId);
 			if (conv) {
 				conv.unread = 0;
+				readCursors = readCursorMap(conv);
 				conversations = [...conversations];
 			}
 		} catch (e) {
@@ -988,7 +1054,7 @@
 										<span class="row-top">
 											<span class="row-title">{conversation.title}</span>
 											{#if conversation.last_message}
-												<span class="row-time">{shortTime(conversation.last_message.created_at)}</span>
+												<span class="row-time">{displayTime(conversation.last_message.created_at)}</span>
 											{/if}
 										</span>
 										<span class="row-bottom">
@@ -1211,7 +1277,7 @@
 					<button class="result" on:click={() => jumpTo(result)}>
 						<span class="result-content">{contentOf(result, attachments, tr)}</span>
 						<span class="result-meta">
-							#{result.seq} · {shortTime(result.created_at)}
+							#{result.seq} · {displayTime(result.created_at)}
 						</span>
 					</button>
 				{/each}
@@ -1243,6 +1309,7 @@
 				{#if item.message.kind === 'system'}
 					<div class="system">{item.message.content}</div>
 				{:else}
+					{@const receipt = item.mine ? receiptFor(item.message) : null}
 					<div class="line" class:mine={item.mine} class:head={item.head} class:tail={item.tail}>
 						{#if !item.mine}
 							<span class="msg-avatar-slot" class:invisible={!item.head}>
@@ -1290,9 +1357,19 @@
 							{:else}
 								<span class="content">{item.message.content}</span>
 							{/if}
-							{#if item.tail}
-								<span class="time">{shortTime(item.message.created_at)}</span>
-							{/if}
+							<span class="message-meta">
+								<span class="time">{displayTime(item.message.created_at)}</span>
+								{#if receipt}
+									<span
+										class="receipt"
+										class:read={receipt.read}
+										title={receipt.label}
+										aria-label={receipt.label}
+									>
+										{receipt.read ? '✓✓' : '✓'}
+									</span>
+								{/if}
+							</span>
 						</div>
 					</div>
 				{/if}
@@ -2117,15 +2194,28 @@
 	.file-input {
 		display: none;
 	}
-	.time {
-		display: block;
+	.message-meta {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.35rem;
+		margin-top: 0.25rem;
 		font-size: 0.65rem;
 		color: var(--muted);
-		margin-top: 0.2rem;
-		text-align: right;
 	}
-	.line.mine .time {
+	.line.mine .message-meta {
 		color: color-mix(in srgb, var(--bubble-out-text) 75%, transparent);
+	}
+	.receipt {
+		font-weight: 700;
+		letter-spacing: -0.1em;
+		color: color-mix(in srgb, var(--muted) 85%, transparent);
+	}
+	.line.mine .receipt {
+		color: color-mix(in srgb, var(--bubble-out-text) 55%, transparent);
+	}
+	.line.mine .receipt.read {
+		color: var(--success);
 	}
 	.composer {
 		display: flex;
