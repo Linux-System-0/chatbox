@@ -367,7 +367,7 @@ sequenceDiagram
 在初始脚手架就绪后，欢迎参与贡献。
 
 1. Fork 仓库并创建功能分支：
-   `git checkout -b feat/your-feature`。
+   `git checkout -b feature/your-feature`。
 2. 遵循**英文优先**约定：代码、注释与文档均使用英文。
 3. 保持提交粒度小，并使用清晰的规范化提交信息。
 4. 在可行的情况下补充测试。
