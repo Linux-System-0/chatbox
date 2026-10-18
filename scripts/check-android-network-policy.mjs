@@ -8,10 +8,15 @@
 // manifest and resources.
 //
 // Usage: node scripts/check-android-network-policy.mjs [--require-apk]
+//                                                 [--apk=<path>]
+//
+// `--apk` points the packaged-manifest inspection at a specific artifact (the
+// release pipeline uses it to check the signed APK); it defaults to the debug
+// APK.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -20,7 +25,10 @@ const sourceRoot = join(android, 'app/src/main/java');
 const factory = join(sourceRoot, 'com/chatbox/android/network/NetworkRuntime.kt');
 const manifest = join(android, 'app/src/main/AndroidManifest.xml');
 const removedConfig = join(android, 'app/src/main/res/xml/network_security_config.xml');
-const apk = join(android, 'app/build/outputs/apk/debug/app-debug.apk');
+const apkArgument = process.argv.find((argument) => argument.startsWith('--apk='));
+const apk = apkArgument
+	? resolve(apkArgument.slice('--apk='.length))
+	: join(android, 'app/build/outputs/apk/debug/app-debug.apk');
 const requireApk = process.argv.includes('--require-apk');
 const errors = [];
 
