@@ -22,7 +22,6 @@ pub struct PresignedUpload {
 }
 
 const PRESIGN_TTL_SECS: u64 = 15 * 60;
-const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
 
 fn storage_key(owner_id: i64, attachment_id: i64) -> String {
     format!("attachments/{owner_id}/{attachment_id}")
@@ -42,6 +41,17 @@ fn validate_filename(filename: &str) -> Result<()> {
 }
 
 impl Services {
+    /// Reject uploads above the configured limit.
+    fn check_upload_size(&self, size: u64) -> Result<()> {
+        match self.config.max_upload_bytes {
+            Some(0) => Err(Error::Forbidden("uploads are disabled".into())),
+            Some(max) if size > max => Err(Error::PayloadTooLarge(format!(
+                "file exceeds the {max} byte upload limit"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     /// Reserve an attachment id and pre-signed upload URL.
     pub async fn presign_attachment(
         &self,
@@ -51,9 +61,7 @@ impl Services {
         size: u64,
     ) -> Result<PresignedUpload> {
         validate_filename(filename)?;
-        if size > MAX_ATTACHMENT_BYTES {
-            return Err(Error::Invalid("file is too large".into()));
-        }
+        self.check_upload_size(size)?;
         let attachment_id = self.new_id();
         let key = storage_key(ctx.user_id, attachment_id);
         let ttl = Duration::from_secs(PRESIGN_TTL_SECS);
@@ -78,9 +86,7 @@ impl Services {
         attachment_id: i64,
         bytes: &[u8],
     ) -> Result<()> {
-        if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
-            return Err(Error::Invalid("file is too large".into()));
-        }
+        self.check_upload_size(bytes.len() as u64)?;
         let key = storage_key(ctx.user_id, attachment_id);
         self.infra.objects.put(&key, bytes).await?;
         Ok(())

@@ -36,6 +36,9 @@ pub struct Config {
     pub admin_user_ids: HashSet<String>,
     /// Groups larger than this fan out on read.
     pub fanout_write_max_members: u64,
+    /// Maximum accepted upload size in bytes; `None` means unlimited and `0`
+    /// disables uploads.
+    pub max_upload_bytes: Option<u64>,
     /// Blocked words enforced by the built-in message guard.
     pub guard_words: Vec<String>,
     /// Deadline for one server-plugin hook call; zero disables it.
@@ -77,6 +80,18 @@ impl Config {
             .parse::<u64>()
             .context("FANOUT_WRITE_MAX_MEMBERS must be an integer")?;
 
+        // Unset or empty means unlimited; `0` disables uploads.
+        let max_upload_bytes = std::env::var("MAX_UPLOAD_BYTES")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .context("MAX_UPLOAD_BYTES must be an integer")
+            })
+            .transpose()?;
+
         let plugin_hook_timeout_ms = env_or("PLUGIN_HOOK_TIMEOUT_MS", "500")
             .parse::<u64>()
             .context("PLUGIN_HOOK_TIMEOUT_MS must be an integer")?;
@@ -102,6 +117,7 @@ impl Config {
             public_base_url,
             admin_user_ids,
             fanout_write_max_members,
+            max_upload_bytes,
             guard_words,
             plugin_hook_timeout_ms,
         })

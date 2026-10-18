@@ -24,6 +24,7 @@ impl IntoResponse for ApiError {
             Error::Unauthorized => StatusCode::UNAUTHORIZED,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Error::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Error::Storage(_) | Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         if status == StatusCode::INTERNAL_SERVER_ERROR {

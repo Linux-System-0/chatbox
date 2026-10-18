@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
     )
     .with_config(ServiceConfig {
         fanout_write_max_members: config.fanout_write_max_members,
+        max_upload_bytes: config.max_upload_bytes,
         ..Default::default()
     });
 

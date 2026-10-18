@@ -243,6 +243,7 @@ dependencies = [
  "chatbox-core",
  "chatbox-plugin",
  "chrono",
+ "futures",
  "serde",
  "serde_json",
  "tokio",

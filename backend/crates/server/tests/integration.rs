@@ -3,13 +3,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chatbox_core::error::Error;
 use chatbox_core::infra::{ConnectionInfo, Infra};
 use chatbox_core::model::{
     FriendRequestStatus, GroupRole, MessageKind, Platform, SearchQuery, SortOrder,
 };
 use chatbox_core::port::Stores;
 use chatbox_core::services::{
-    AuthContext, AuthTokens, ConversationView, LoginInput, RegisterInput, SendRequest, Services,
+    AuthContext, AuthTokens, ConversationView, LoginInput, RegisterInput, SendRequest,
+    ServiceConfig, Services,
 };
 use chatbox_core::tokens::TokenConfig;
 use chatbox_core::{Snowflake, SystemClock, TokenManager};
@@ -23,6 +25,10 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_with_config(ServiceConfig::default())
+}
+
+fn harness_with_config(config: ServiceConfig) -> Harness {
     let memory = Arc::new(MemoryStore::new().with_base_url("http://localhost"));
     let stores = Stores {
         users: memory.clone(),
@@ -57,7 +63,8 @@ fn harness() -> Harness {
         Arc::new(Snowflake::new(1)),
         tokens,
         Arc::new(SystemClock),
-    );
+    )
+    .with_config(config);
     let plugins = Arc::new(PluginHost::new(services.stores.plugins.clone()));
     Harness { services, plugins }
 }
@@ -747,6 +754,82 @@ async fn file_upload_round_trip() {
         .unwrap();
     assert_eq!(fetched.sha256, attachment.sha256);
     assert!(url.contains(&attachment.id.to_string()));
+}
+
+#[tokio::test]
+async fn upload_limit_is_unlimited_by_default() {
+    let h = harness();
+    let (_, _, alice) = register(&h.services, "alice").await;
+
+    // Presign accepts any size while no limit is configured.
+    h.services
+        .presign_attachment(
+            &alice,
+            "huge.bin",
+            "application/octet-stream",
+            600 * 1024 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn upload_limit_rejects_oversized_files() {
+    let h = harness_with_config(ServiceConfig {
+        max_upload_bytes: Some(1024),
+        ..Default::default()
+    });
+    let (_, _, alice) = register(&h.services, "alice").await;
+
+    let error = h
+        .services
+        .presign_attachment(&alice, "big.bin", "application/octet-stream", 1025)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::PayloadTooLarge(_)));
+
+    let upload = h
+        .services
+        .presign_attachment(&alice, "ok.bin", "application/octet-stream", 1024)
+        .await
+        .unwrap();
+    h.services
+        .store_upload(&alice, upload.attachment_id, &[0u8; 1024])
+        .await
+        .unwrap();
+
+    let error = h
+        .services
+        .store_upload(&alice, upload.attachment_id, &[0u8; 1025])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::PayloadTooLarge(_)));
+}
+
+#[tokio::test]
+async fn upload_limit_zero_disables_uploads() {
+    let h = harness_with_config(ServiceConfig {
+        max_upload_bytes: Some(0),
+        ..Default::default()
+    });
+    let (_, _, alice) = register(&h.services, "alice").await;
+
+    let error = h
+        .services
+        .presign_attachment(&alice, "small.bin", "application/octet-stream", 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)));
+
+    let error = h
+        .services
+        .presign_attachment(&alice, "empty.bin", "application/octet-stream", 0)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)));
+
+    let error = h.services.store_upload(&alice, 1, b"").await.unwrap_err();
+    assert!(matches!(error, Error::Forbidden(_)));
 }
 
 #[tokio::test]

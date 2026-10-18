@@ -27,6 +27,10 @@ pub enum Error {
     #[error("rate limited")]
     RateLimited,
 
+    /// The request payload exceeds the configured limit.
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
+
     /// An infrastructure dependency failed.
     #[error("storage error: {0}")]
     Storage(String),
@@ -51,6 +55,7 @@ impl Error {
             Error::Unauthorized => "unauthorized",
             Error::Forbidden(_) => "forbidden",
             Error::RateLimited => "rate_limited",
+            Error::PayloadTooLarge(_) => "payload_too_large",
             Error::Storage(_) => "storage_error",
             Error::Internal(_) => "internal_error",
         }

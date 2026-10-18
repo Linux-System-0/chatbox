@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use axum::Json;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header;
@@ -13,6 +13,7 @@ use chatbox_core::error::Error;
 use chatbox_core::model::{GroupRole, MessageKind, Platform, SearchQuery, SortOrder};
 use chatbox_core::services::{AuthContext, LoginInput, RegisterInput, SendRequest};
 use chatbox_plugin::{HookContext, HookOutcome};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -825,14 +826,42 @@ pub async fn presign(
 
 /// `PUT /files/upload/{id}` — used by clients when the storage backend does
 /// not accept direct uploads (local development).
+///
+/// The route disables the axum body limit so the configured
+/// [`chatbox_core::services::ServiceConfig::max_upload_bytes`] is authoritative.
 pub async fn upload(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
     Path(id): Path<i64>,
-    body: Bytes,
+    body: Body,
 ) -> ApiResult<StatusCode> {
-    state.services.store_upload(&ctx, id, &body).await?;
+    let bytes = read_upload_body(body, state.services.config.max_upload_bytes).await?;
+    state.services.store_upload(&ctx, id, &bytes).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Buffer an upload body while enforcing the configured size limit.
+async fn read_upload_body(body: Body, max: Option<u64>) -> ApiResult<Bytes> {
+    // `0` disables uploads, so refuse before buffering anything.
+    if max == Some(0) {
+        return Err(Error::Forbidden("uploads are disabled".into()).into());
+    }
+    let mut stream = body.into_data_stream();
+    let mut buffer = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| Error::Invalid("failed to read request body".into()))?;
+        if let Some(max) = max {
+            let total = buffer.len() as u64 + chunk.len() as u64;
+            if total > max {
+                return Err(Error::PayloadTooLarge(format!(
+                    "file exceeds the {max} byte upload limit"
+                ))
+                .into());
+            }
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer.into())
 }
 
 #[derive(Deserialize)]

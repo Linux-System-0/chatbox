@@ -44,6 +44,9 @@ pub struct ServiceConfig {
     pub max_page_size: u32,
     /// Groups at or below this size fan out on write; larger ones on read.
     pub fanout_write_max_members: u64,
+    /// Maximum accepted upload size in bytes. `None` means unlimited and
+    /// `0` disables uploads entirely.
+    pub max_upload_bytes: Option<u64>,
 }
 
 impl Default for ServiceConfig {
@@ -56,6 +59,7 @@ impl Default for ServiceConfig {
             default_page_size: 50,
             max_page_size: 200,
             fanout_write_max_members: 256,
+            max_upload_bytes: None,
         }
     }
 }

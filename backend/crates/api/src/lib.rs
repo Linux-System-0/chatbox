@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post, put};
 use chatbox_core::services::Services;
 use chatbox_plugin::PluginHost;
@@ -118,7 +119,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/search", get(handlers::search))
         .route("/api/v1/files/presign", post(handlers::presign))
-        .route("/api/v1/files/upload/{id}", put(handlers::upload))
+        // The upload size limit is enforced per request in the handler from
+        // `MAX_UPLOAD_BYTES`, so the 2 MiB extractor default must not apply.
+        .route(
+            "/api/v1/files/upload/{id}",
+            put(handlers::upload).layer(DefaultBodyLimit::disable()),
+        )
         .route("/api/v1/files/{id}", get(handlers::get_file))
         .route("/api/v1/files/{id}/complete", post(handlers::complete_file))
         .route("/api/v1/files/{id}/content", get(handlers::file_content))
