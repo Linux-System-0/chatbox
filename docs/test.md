@@ -117,20 +117,40 @@ cd .. && node scripts/check-android-network-policy.mjs
 ## Required repository settings
 
 The workflow alone does not gate anything; GitHub has to be told to require it.
-Under **Settings → Branches → Branch protection rules** for `main` (and
-`develop`):
+ChatBox uses **repository rulesets** (**Settings → Rules → Rulesets**) rather
+than the older per-branch protection page, so the policy is one auditable object
+per target:
 
-- [ ] **Require a pull request before merging** — blocks direct pushes
-      (`AGENTS.md` §2).
-- [ ] **Require status checks to pass before merging**, with `Verify sources`
-      selected as required. For same-repository branches the check comes from
-      the `push` run on the pull request's head commit; because there is no
-      `pull_request` trigger, fork pull requests never report it. Optionally
-      enable **Require branches to be up to date before merging**, but note that
-      it does not create a check for the merge commit.
-- [ ] **Require signed commits** — mirrors the GPG rule in `AGENTS.md` §5.
-- [ ] **Do not allow bypassing the above settings** for the rule to apply to
-      maintainers too.
+| Ruleset | Targets | Rules |
+|---|---|---|
+| `**` | every branch | signed commits |
+| `main` | `refs/heads/main` | pull request, required status checks, signed commits, linear history, no deletion/force-push/ref update/ref creation |
+| `develop` | `refs/heads/develop` | same as `main` |
+| `v*` | `refs/tags/v*` | signed commits, linear history, no deletion/force-push/tag update/tag creation |
+
+The pull request rule on `main` and `develop` requires one approving review,
+dismisses stale approvals on push, requires approval of the last push, and
+requires review threads to be resolved. The required check context is exactly
+`Verify sources`: for same-repository pull requests it comes from the `push`
+run on the head commit, and because there is no `pull_request` trigger fork pull
+requests never report it. The check is not *strict*: a branch does not have to
+be up to date with the target before merging.
+
+Signed commits are required on every branch by `**`, mirroring the GPG rule in
+`AGENTS.md` §5; the per-branch rulesets repeat the requirement so it survives an
+edit to the global ruleset.
+
+The owner is currently the only bypass actor. GitHub does not let an author
+approve their own pull request, so a single maintainer needs the escape hatch
+to land reviewed work; the rules are enforced for every other contributor but
+advisory for the owner. The same bypass also bypasses the `update` rule, which
+otherwise lets only bypass actors move the ref. Before a second maintainer
+merges anything, either add them as a bypass actor or drop the `update` rule —
+otherwise only the owner can merge.
+
+At repository level, **Require SHA pinning** (`sha_pinning_required`) is enabled
+too, so an action referenced by a tag or branch fails the run even if review
+misses it (`AGENTS.md` §8).
 
 Without the required-check entry, `Verify sources` merely reports on the branch
 push.
