@@ -62,6 +62,11 @@ release.
 - **Multi-device** — the same account can be signed in on several devices at the
   same time, with messages synchronized across all of them.
 - **Message mentions** — `@` users inside group chats.
+- **Absolute times and read receipts** — every message shows its send time in a
+  user-defined format and time zone, with gray/green checks for whether the
+  other participant has read it.
+- **Time display settings** — choose the system time zone or a fixed UTC offset,
+  and the system date/time format or a custom pattern.
 
 ### 🔎 Search
 - **Type search** — for files only, by filename with **wildcard** support
@@ -352,8 +357,8 @@ receipt) with designs that stay correct under heavy concurrency.
    push/pull policy, and route via the connection registry.
 5. **Deliver** — the owning gateways push over WebSocket with bounded queues;
    offline devices advance their cursor on reconnect.
-6. **Ack** — per-device acks advance read cursors; receipts are coalesced and
-   batched, never one row update per receipt.
+6. **Ack** — per-device acks advance monotonic read cursors; each advance
+   publishes a read receipt. Repeated or older acks are ignored.
 
 ```mermaid
 sequenceDiagram

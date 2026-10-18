@@ -37,6 +37,7 @@ future use.
 { "type": "ack", "client_msg_id": "uuid", "conversation_id": 42, "seq": 129,
   "message_id": 9001 }
 { "type": "message", "message": { /* Message */ } }
+{ "type": "read", "conversation_id": 42, "user_id": 7, "seq": 129 }
 { "type": "presence", "user_id": 7, "online": true, "devices": 2 }
 { "type": "sync", "scopes": ["conversations", "groups"],
   "conversation_id": 42, "group_id": 9 }
@@ -72,6 +73,10 @@ cannot leave stale state indefinitely.
   gateway drops the oldest queued frame or disconnects the slow client rather
   than growing memory without limit.
 - Offline messages are persisted and delivered on reconnect via `resume`.
+- Advancing a read cursor publishes a `read` frame to every conversation member
+  (including the reader's other devices). Clients use the frame together with
+  the `read_cursors` list in `GET /conversations` to render per-message read
+  receipts.
 
 ## Presence
 

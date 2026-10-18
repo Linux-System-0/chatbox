@@ -10,7 +10,7 @@ the design system; protocol details live in [`api.md`](api.md) and
 
 ```
 +--------------------------------------------------+
-| header: brand · language · theme · user · logout |
+| header: brand · language · theme · time · user · logout |
 +------------------+-------------------------------+
 | sidebar          | toolbar (title · status · search)
 |  chats/contacts  +-------------------------------+
@@ -112,13 +112,30 @@ onto its design tokens:
 ## Messages
 
 `chat/+page.svelte` groups consecutive messages from the same sender within
-five minutes and renders the timestamp only on the last bubble of a group. Day
-separators are inserted whenever the calendar day changes; system notices render
-as centered pills. Names follow **contact remark → display name → custom user
-ID**, and avatars follow **contact remark avatar → profile avatar → generated
-default avatar**. The generated fallback derives a stable hue from the numeric
-user id, so no profile fetch is required. Group messages show the sender name
-and avatar in front of each message group.
+five minutes for avatar/layout purposes, but **every message bubble shows its
+absolute send time**. Day separators are inserted whenever the calendar day
+changes in the configured time zone; system notices render as centered pills.
+Names follow **contact remark → display name → custom user ID**, and avatars
+follow **contact remark avatar → profile avatar → generated default avatar**.
+The generated fallback derives a stable hue from the numeric user id, so no
+profile fetch is required. Group messages show the sender name and avatar in
+front of each message group.
+
+### Time display and read receipts
+
+- The header's clock button opens the **time display** dialog. The user chooses
+  either the system time zone or a fixed offset from UTC (15-minute steps) and
+  either the system's localized date/time format or a custom pattern
+  (`YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, `Z`, with `[literal]` escapes).
+  Settings are stored locally per account; the defaults are the system time zone
+  and system format.
+- Every outgoing message carries a read receipt. A gray `✓` means "not read
+  yet"; it becomes a green `✓✓` once every other participant's read cursor
+  reaches the message sequence. In a group the accessible label reports the
+  read count (`Read by 2/3`), and the check turns green only when all other
+  members have read the message.
+- `ConversationView.read_cursors` seeds the cursor map; live `read` frames update
+  it, so receipts change without polling or reloading history.
 
 Direct-chat presence is taken from the `presence` frames and the presence
 bootstrap endpoint, not from the local WebSocket connection status. The local

@@ -63,7 +63,10 @@ Unifies one-to-one and group conversations.
 | `created_at` | timestamp | |
 
 `ConversationMember` links users to conversations and stores the per-user read
-cursor (`last_read_seq`) and optional mute deadline.
+cursor (`last_read_seq`) and optional mute deadline. The cursor is monotonic and
+drives read receipts: a message is read by a member when their cursor is at
+least the message `seq`. Conversation summaries expose every member's cursor so
+clients can render receipts without a separate query.
 
 ### Message
 

@@ -77,12 +77,14 @@ A direct conversation can be created only after the contact link exists.
 | `POST` | `/conversations/direct` | Get or create a direct conversation (contacts only) |
 | `GET` | `/conversations/{id}/messages` | Page messages (`before`/`after`/`limit`) |
 | `POST` | `/conversations/{id}/messages` | REST send (used by clients without WS) |
-| `POST` | `/conversations/{id}/read` | Advance the read cursor |
+| `POST` | `/conversations/{id}/read` | Advance the read cursor (publishes a `read` frame) |
 
 `ConversationView` includes `avatar_url`, `peer_id` (direct only), `group_id`
 (group only), and `member_count`, so clients can render the title, avatar, and
 presence state without extra lookups. Direct titles already apply the caller's
-contact remark precedence.
+contact remark precedence. It also contains `read_cursors` — one
+`{ "user_id", "last_read_seq" }` entry per member — which clients combine with
+the live `read` WebSocket frame to render per-message read receipts.
 
 ## Groups
 

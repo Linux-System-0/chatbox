@@ -75,7 +75,8 @@ backend/
    push/pull policy, and route via the connection registry.
 5. **Deliver** — the owning gateways push over WebSocket with bounded queues;
    offline devices advance their cursor on reconnect.
-6. **Ack** — per-device acks advance read cursors; receipts are coalesced.
+6. **Ack** — per-device acks advance monotonic read cursors; each advance
+   publishes a read receipt.
 
 ## Dependency direction
 

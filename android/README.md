@@ -57,3 +57,9 @@ they are installed and applied entirely on the device and never change server
 behavior. `plugins/ClientPlugins.kt` provides the built-in English fallback
 dictionary and the light/dark/system themes. Other languages, including
 Simplified Chinese, come from language packs installed as plugin files.
+
+Time display is configured from the clock button in the chat top bar. The
+default follows the device time zone and localized date/time format; a fixed UTC
+offset and a custom `YYYY-MM-DD HH:mm:ss`-style pattern can be selected per
+account. Message bubbles show absolute send times and gray/green read receipts
+fed by the `read` realtime frame.
