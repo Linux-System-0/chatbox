@@ -1,0 +1,106 @@
+name: verify
+
+# Source verification gate.
+#
+# - `push` (unfiltered): verifies every pushed branch and tag. For a pull
+#   request, the run on the head branch produces the `Verify sources` check that
+#   branch protection can require. It does not see GitHub's synthetic merge
+#   commit, and fork pull requests get no run at all; see docs/test.md.
+# - `workflow_call`: reused by `.github/workflows/release.yml` (the tag
+#   pipeline), so a release is built from a tree that passed exactly these
+#   checks instead of keeping two copies that drift apart.
+# - `workflow_dispatch`: lets a maintainer run the gate manually from the
+#   Actions tab against a branch, tag, or commit without pushing anything.
+#
+# This workflow checks out the requested ref itself; callers must not assume a
+# checkout has happened. Keep every external `uses:` below pinned to a full
+# commit SHA (AGENTS.md §8).
+on:
+  push:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to verify. Defaults to the caller's ref.
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit SHA to verify. Defaults to the selected ref.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: write
+
+# `cancel-in-progress` is only true for pull_request, which this workflow does
+# not trigger, so runs are never cancelled. Keeping the expression explicit
+# preserves the policy if a pull_request trigger is added. Called runs share the
+# caller's run and are covered by the caller's own concurrency group.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    # A direct push or manual run reports this name as the status check. When
+    # `release.yml` calls the workflow, GitHub prefixes it with the caller job,
+    # producing `verify / Verify sources` (see docs/test.md).
+    name: Verify sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: "backend -> target"
+
+      - name: Check formatting
+        working-directory: backend
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        working-directory: backend
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --workspace --locked
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      # `npm run check` runs svelte-kit sync, svelte-check, and then
+      # check-language-packs.mjs.
+      - name: Check web client
+        working-directory: web
+        run: npm run check
+
+      - name: Check Android network policy (source)
+        run: node scripts/check-android-network-policy.mjs
