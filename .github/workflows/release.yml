@@ -19,6 +19,9 @@ env:
   ANDROID_NDK: "27.0.12077973"
 
 jobs:
+  # Every job pins `ubuntu-24.04` instead of `ubuntu-latest`: the released
+  # x86_64 binary links the runner's glibc, so an image rollover would silently
+  # raise the minimum glibc for users (see docs/release.md).
   # Reuse the CI gate's reusable workflow instead of keeping a second copy of
   # the checks here: the release must be built from a tree that passed exactly
   # what main is gated on.
@@ -33,7 +36,7 @@ jobs:
   backend:
     name: Build server binaries
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -104,7 +107,7 @@ jobs:
   android:
     name: Build signed APK
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -233,7 +236,7 @@ jobs:
   release:
     name: Publish release
     needs: [backend, android]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       TAG: ${{ github.ref_name }}

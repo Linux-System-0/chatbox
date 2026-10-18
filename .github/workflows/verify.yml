@@ -53,7 +53,9 @@ jobs:
     # `release.yml` calls the workflow, GitHub prefixes it with the caller job,
     # producing `verify / Verify sources` (see docs/test.md).
     name: Verify sources
-    runs-on: ubuntu-latest
+    # Pinned rather than `ubuntu-latest` so the toolchain does not change under
+    # the gate when GitHub rolls the `-latest` alias forward (docs/test.md).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
