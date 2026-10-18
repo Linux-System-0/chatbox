@@ -19,6 +19,7 @@ Configuration comes from environment variables (optionally loaded from
 | `ADMIN_USER_IDS` | Comma-separated user ids allowed to enable server plugins | — |
 | `MESSAGE_GUARD_WORDS` | Comma-separated blocked words for the built-in message guard | — |
 | `OBJECT_STORAGE_DIR` | Local object storage root for development | `data/objects` |
+| `MAX_UPLOAD_BYTES` | Maximum accepted upload size in bytes (`0` disables uploads, unset means unlimited) | unlimited |
 
 `MYSQL_SHARDS` example — two shards, the first with two read replicas:
 

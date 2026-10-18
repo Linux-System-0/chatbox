@@ -123,6 +123,12 @@ Blocking does not delete the contact link, but the blocked user is hidden from
 
 Files are uploaded **directly to object storage** with a pre-signed URL.
 
+Uploads are unlimited by default. Set the server's `MAX_UPLOAD_BYTES`
+environment variable to cap them; `POST /files/presign` and the local
+`PUT /files/upload/{id}` endpoint then both reject larger bodies with
+`413 Payload Too Large` (`payload_too_large`). Setting `MAX_UPLOAD_BYTES=0`
+disables uploads and both endpoints answer `403 Forbidden` (`forbidden`).
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/files/presign` | Request an upload URL + attachment ID |
