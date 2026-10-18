@@ -77,6 +77,8 @@
       "profile_error": "资料更新失败",
       "user_id_hint": "字母、数字、点、下划线和连字符；3–32 个字符。",
       "cancel": "取消",
+      "confirm": "确认",
+      "confirm_title": "请确认",
       "save": "保存",
       "incoming_requests": "收到的请求",
       "outgoing_requests": "已发送的请求",

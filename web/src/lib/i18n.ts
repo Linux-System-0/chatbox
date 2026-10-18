@@ -91,6 +91,8 @@ const baseStrings: Record<string, string> = {
 	profile_error: 'Could not update the profile',
 	user_id_hint: 'Letters, digits, dot, underscore and hyphen; 3–32 characters.',
 	cancel: 'Cancel',
+	confirm: 'Confirm',
+	confirm_title: 'Please confirm',
 	save: 'Save',
 	incoming_requests: 'Incoming requests',
 	outgoing_requests: 'Sent requests',

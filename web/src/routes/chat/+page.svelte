@@ -2,6 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Avatar from '$lib/Avatar.svelte';
+	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import { apiBlob, deleteJson, getJson, patchJson, postJson } from '$lib/api';
 	import { effectiveAvatar, effectiveName, fileToAvatar } from '$lib/avatar';
 	import { translator } from '$lib/i18n';
@@ -132,6 +133,7 @@
 	let groupRemark = '';
 	let groupAddSelection: number[] = [];
 	let groupActionError = '';
+	let pendingGroupAction: 'leave' | 'dissolve' | null = null;
 
 	$: myId = $session?.user.id;
 	$: selectedConversation = conversations.find((c) => c.id === selected) ?? null;
@@ -862,22 +864,26 @@
 		}
 	}
 
-	async function leaveGroup() {
+	function leaveGroup() {
 		if (!groupInfo) return;
-		if (!confirm(tr('confirm_leave_group'))) return;
-		try {
-			await postJson(`/groups/${groupInfo.group.id}/leave`);
-			closeGroup();
-		} catch (e) {
-			groupActionError = e instanceof Error ? e.message : tr('group_error');
-		}
+		pendingGroupAction = 'leave';
 	}
 
-	async function dissolveGroup() {
+	function dissolveGroup() {
 		if (!groupInfo) return;
-		if (!confirm(tr('confirm_dissolve_group'))) return;
+		pendingGroupAction = 'dissolve';
+	}
+
+	async function confirmGroupAction() {
+		const action = pendingGroupAction;
+		pendingGroupAction = null;
+		if (!action || !groupInfo) return;
 		try {
-			await deleteJson(`/groups/${groupInfo.group.id}`);
+			if (action === 'leave') {
+				await postJson(`/groups/${groupInfo.group.id}/leave`);
+			} else {
+				await deleteJson(`/groups/${groupInfo.group.id}`);
+			}
 			closeGroup();
 		} catch (e) {
 			groupActionError = e instanceof Error ? e.message : tr('group_error');
@@ -889,6 +895,7 @@
 		groupInfo = null;
 		selected = null;
 		messages = [];
+		pendingGroupAction = null;
 		refreshAll();
 	}
 
@@ -1571,6 +1578,18 @@
 			</div>
 		</div>
 	</div>
+{/if}
+
+{#if pendingGroupAction}
+	<ConfirmDialog
+		message={pendingGroupAction === 'leave'
+			? tr('confirm_leave_group')
+			: tr('confirm_dissolve_group')}
+		confirmText={pendingGroupAction === 'leave' ? tr('leave_group') : tr('dissolve_group')}
+		danger={pendingGroupAction === 'dissolve'}
+		onCancel={() => (pendingGroupAction = null)}
+		onConfirm={confirmGroupAction}
+	/>
 {/if}
 
 <style>
