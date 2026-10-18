@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     Conversation, ConversationKind, ConversationMember, Message, MessageKind, OutboxEvent,
 };
-use crate::protocol::SyncScope;
+use crate::protocol::{ServerFrame, SyncScope};
 
 /// A send request from a client.
 #[derive(Debug, Clone)]
@@ -45,8 +45,19 @@ pub struct ConversationView {
     pub last_message: Option<Message>,
     /// The caller's read cursor.
     pub last_read_seq: u64,
+    /// Read cursors for every member, used for per-message read receipts.
+    pub read_cursors: Vec<ReadCursorView>,
     /// Number of unread messages.
     pub unread: u64,
+}
+
+/// A member's read position within a conversation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReadCursorView {
+    /// Member user id.
+    pub user_id: i64,
+    /// Highest sequence the member has read.
+    pub last_read_seq: u64,
 }
 
 struct ConversationIdentity {
@@ -295,11 +306,24 @@ impl Services {
 
     /// Advance the caller's read cursor.
     pub async fn mark_read(&self, ctx: &AuthContext, conversation_id: i64, seq: u64) -> Result<()> {
-        self.require_member(conversation_id, ctx.user_id).await?;
+        let member = self.require_member(conversation_id, ctx.user_id).await?;
+        if seq <= member.last_read_seq {
+            return Ok(());
+        }
         self.stores
             .conversations
             .set_read_cursor(conversation_id, ctx.user_id, seq)
             .await?;
+        // Notify every participant (including the reader's other devices) so
+        // senders can flip their read receipts without polling.
+        let frame = ServerFrame::Read {
+            conversation_id,
+            user_id: ctx.user_id,
+            seq,
+        };
+        if let Err(e) = self.notify_conversation(conversation_id, &frame).await {
+            tracing::warn!(conversation_id, error = %e, "read receipt notification failed");
+        }
         Ok(())
     }
 
@@ -320,6 +344,17 @@ impl Services {
             let title = self
                 .conversation_identity(&conversation, ctx.user_id)
                 .await?;
+            let read_cursors = self
+                .stores
+                .conversations
+                .list_members(conversation.id)
+                .await?
+                .into_iter()
+                .map(|member| ReadCursorView {
+                    user_id: member.user_id,
+                    last_read_seq: member.last_read_seq,
+                })
+                .collect();
             let last = self
                 .stores
                 .messages
@@ -342,6 +377,7 @@ impl Services {
                 member_count: title.member_count,
                 last_message: last,
                 last_read_seq: membership.last_read_seq,
+                read_cursors,
                 unread,
             });
         }

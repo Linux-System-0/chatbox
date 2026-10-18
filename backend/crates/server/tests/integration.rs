@@ -9,6 +9,7 @@ use chatbox_core::model::{
     FriendRequestStatus, GroupRole, MessageKind, Platform, SearchQuery, SortOrder,
 };
 use chatbox_core::port::Stores;
+use chatbox_core::protocol::{Delivery, ServerFrame};
 use chatbox_core::services::{
     AuthContext, AuthTokens, ConversationView, LoginInput, RegisterInput, SendRequest,
     ServiceConfig, Services,
@@ -228,10 +229,65 @@ async fn direct_messaging_is_idempotent_and_searchable() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, first.id);
 
-    // Conversation summary reports unread for Alice.
+    // Conversation summary reports unread for Alice and Bob's read cursor.
     let conversations: Vec<ConversationView> = h.services.list_conversations(&alice).await.unwrap();
     assert_eq!(conversations.len(), 1);
     assert_eq!(conversations[0].unread, 1);
+    let bob_cursor = conversations[0]
+        .read_cursors
+        .iter()
+        .find(|cursor| cursor.user_id == bob_id)
+        .expect("bob read cursor");
+    assert_eq!(bob_cursor.last_read_seq, second.seq);
+}
+
+#[tokio::test]
+async fn reading_a_message_publishes_a_read_receipt() {
+    let h = harness();
+    let (alice_id, _, alice) = register(&h.services, "alice").await;
+    let (bob_id, _, bob) = register(&h.services, "bob").await;
+    befriend(&h.services, &alice, "bob", &bob).await;
+    let conv = h
+        .services
+        .get_or_create_direct(&alice, "bob")
+        .await
+        .unwrap();
+    let message = send(&h.services, &alice, conv.id, "m1", "hello bob").await;
+
+    h.services
+        .infra
+        .registry
+        .register(
+            alice_id,
+            ConnectionInfo {
+                node_id: "node-1".into(),
+                device_id: 1,
+                conn_id: "alice-conn".into(),
+                last_seen: h.services.now(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut bus = h.services.infra.bus.subscribe();
+    h.services
+        .mark_read(&bob, conv.id, message.seq)
+        .await
+        .unwrap();
+
+    let mut receipt = None;
+    while let Ok(event) = bus.try_recv() {
+        let delivery: Delivery = serde_json::from_str(&event.payload).unwrap();
+        if let ServerFrame::Read {
+            conversation_id,
+            user_id,
+            seq,
+        } = delivery.frame
+        {
+            receipt = Some((conversation_id, user_id, seq));
+            break;
+        }
+    }
+    assert_eq!(receipt, Some((conv.id, bob_id, message.seq)));
 }
 
 #[tokio::test]

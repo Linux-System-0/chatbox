@@ -87,6 +87,15 @@ pub enum ServerFrame {
         /// The message.
         message: Message,
     },
+    /// A member advanced their read cursor.
+    Read {
+        /// Conversation.
+        conversation_id: i64,
+        /// Member whose cursor advanced.
+        user_id: i64,
+        /// Highest sequence the member has read.
+        seq: u64,
+    },
     /// A hint that a message exists; large groups pull by cursor.
     MessageHint {
         /// Conversation.
