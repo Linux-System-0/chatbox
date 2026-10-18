@@ -1,21 +1,35 @@
 # Release Pipeline
 
 This document describes how ChatBox turns a signed tag into published release
-artifacts. It is the specification for the pipeline: the workflow file that
-implements it is deliberately kept outside the repository, so this file is the
-reference to review and to keep any external workflow in sync with
-(see `AGENTS.md` §6).
+artifacts. It is the specification for the pipeline; the implementation lives in
+`.github/workflows/release.yml`. The verification gate it starts with is the
+same workflow that runs as the push gate,
+`.github/workflows/verify.yml`; it is also callable and manually dispatchable,
+and the checks it runs are described in [`test.md`](test.md). When a workflow
+and this document disagree, fix them in the same change (`AGENTS.md` §6).
 
 ## Triggers
 
 | Trigger | Purpose | Tag used |
 |---|---|---|
-| `push` of a `v*` tag | Normal release | the pushed tag |
-| `workflow_dispatch` (`tag` input) | Re-run a release after a transient failure | the supplied tag |
+| `push` of a `v*` tag | Release | the pushed tag |
 
-Both triggers require an **annotated, GPG-signed** tag (`AGENTS.md` §5). The
+The trigger requires an **annotated, GPG-signed** tag (`AGENTS.md` §5). The
 release job refuses to publish otherwise, so an unsigned or lightweight tag
 fails loudly instead of producing an unverifiable release.
+
+The workflow has no `workflow_dispatch` trigger or `tag` input. A transient
+failure is retried with **Re-run failed jobs** in the Actions UI; pushing a new
+signed tag is reserved for a new release. The verification workflow itself
+(`verify.yml`) can be run manually to check a tag before publishing; see
+[`test.md`](test.md#triggers).
+
+Ordinary branch pushes and pull requests do not run `release.yml`; they are
+covered by the CI gate in [`test.md`](test.md).
+
+A per-tag `concurrency` group with `cancel-in-progress: false` queues overlapping
+runs for the same tag instead of cancelling a run that may already be
+publishing.
 
 ## Jobs
 
@@ -29,16 +43,29 @@ not pass formatting, lint, tests, or the project's own guard scripts.
 
 ### `verify`
 
-Cheap, fail-fast source checks:
+The job calls the same verification workflow as the push gate:
 
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets --locked -- -D warnings`
-- `cargo test --workspace --locked` (the domain services run against the
-  in-memory stores, so no MySQL/Redis service is required)
-- `npm ci && npm run check` in `web/` (Svelte check + language packs)
-- `node scripts/check-android-network-policy.mjs` (source-level half of the
-  network policy guard)
-- `node scripts/check-language-packs.mjs`
+```yaml
+verify:
+  permissions:
+    contents: read
+    actions: write
+  uses: ./.github/workflows/verify.yml
+  with:
+    ref: ${{ github.ref }}
+```
+
+It is deliberately not a copy of the checks. The release must be built from a
+tree that passed the exact same gate the push workflow runs; a second
+hard-coded list here would drift from [`test.md`](test.md) and quietly weaken
+the release. The called workflow checks out the tag itself, so the caller has no
+checkout step; `backend`, `android`, and `release` check out `github.ref` (the
+pushed tag) directly.
+
+What the workflow runs — formatting, lint, backend tests, the web check (which
+includes the language-pack guard), and the source-level Android network policy
+check — is specified in [`test.md`](test.md#jobs) and the
+[reuse and manual runs section](test.md#reuse-and-manual-runs).
 
 ### `backend`
 
@@ -47,8 +74,8 @@ artifacts:
 
 | Asset | Target | Builder |
 |---|---|---|
-| `chatbox-server-x86_64-unknown-linux` | `x86_64-unknown-linux-gnu` | `cargo build --release` |
-| `chatbox-server-arm64-unknown-linux` | `aarch64-unknown-linux-gnu` | `cargo zigbuild --release` |
+| `chatbox-server-x86_64-unknown-linux` | `x86_64-unknown-linux-gnu` | `cargo build --release --locked` |
+| `chatbox-server-arm64-unknown-linux` | `aarch64-unknown-linux-gnu` | `cargo zigbuild --release --locked` |
 
 `cargo-zigbuild` cross-compiles to `aarch64` without a system toolchain, so the
 ARM64 binary is produced on a plain `ubuntu-latest` runner. Both binaries are
@@ -75,15 +102,19 @@ Builds, signs, and verifies the release APK:
    artifact explicitly.
 
 The temporary keystore is deleted in an `if: always()` step. Android SDK
-packages are pinned to the build's `compileSdk`/`buildToolsVersion`
-(`android-35`, `build-tools;35.0.0`); bumping `compileSdk` in
-`android/app/build.gradle.kts` requires bumping them here too.
+packages are pinned to the build's `compileSdk`/`buildToolsVersion`/NDK
+(`android-35`, `build-tools;35.0.0`, `27.0.12077973`); the command-line tools
+archive is fixed by URL. Bumping `compileSdk` in
+`android/app/build.gradle.kts` requires bumping these values here too.
 
 ### `release`
 
-Downloads both artifact bundles, writes `SHA256SUMS.txt`, and publishes a GitHub
-release with `gh release create --generate-notes --verify-tag`. Release notes
-are generated from commit history by GitHub rather than assembled by hand.
+Downloads both artifact bundles and writes `SHA256SUMS.txt`. Before publishing,
+it fetches tags and verifies that the tag is an annotated tag object containing a
+PGP signature; an unsigned or lightweight tag fails the job. It then publishes a
+GitHub release with `gh release create --generate-notes --verify-tag --latest`.
+Release notes are generated from commit history by GitHub rather than assembled
+by hand.
 
 ## Required secrets
 
@@ -115,11 +146,17 @@ instead of a confusing `apksigner` exit code.
   serve its output, so shipping it requires either a static-serve decision or a
   separate web artifact. Track this in the roadmap before claiming web support
   in a release.
+- There is no `workflow_dispatch` trigger or tag input on the release workflow;
+  retries use the Actions **Re-run failed jobs** button. Re-releasing a tag with
+  different content requires a new tag. The reusable verification workflow can
+  be dispatched on its own, but it does not publish.
 - Docker images (`deploy/docker`) are built outside this workflow.
 
 ## Local dry run
 
-Reproduce the gates before tagging:
+Reproduce the gates before tagging. The first block is exactly the CI gate
+([`test.md`](test.md#reproducing-locally)); the second adds the release-only Android
+steps:
 
 ```bash
 cd backend

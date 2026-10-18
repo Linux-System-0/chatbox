@@ -338,9 +338,14 @@ merged manifest sets `usesCleartextTraffic="true"`.
 CI guard: `node scripts/check-android-network-policy.mjs --require-apk` fails if
 networking code constructs `OkHttpClient` directly instead of using the shared
 factory, if the manifest or resource regresses, or if the packaged APK does not
-match. Pass `--apk=<path>` to inspect a specific artifact instead of the debug
-build; the release pipeline uses it to check the signed APK. Run the JVM tests
-with `./gradlew :app:testDebugUnitTest` and the instrumented tests with
+match. The source-level check is part of the verification workflow
+(`.github/workflows/verify.yml`, the push gate described in
+[`test.md`](test.md#jobs)); the packaged-APK check runs in the release pipeline
+(`.github/workflows/release.yml`, described in
+[`release.md`](release.md#android)).
+Pass `--apk=<path>` to inspect a specific artifact instead of the debug build;
+the release pipeline uses it to check the signed APK. Run the JVM tests with
+`./gradlew :app:testDebugUnitTest` and the instrumented tests with
 `./gradlew :app:connectedDebugAndroidTest`.
 
 ## 19. Migration

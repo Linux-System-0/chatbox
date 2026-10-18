@@ -224,6 +224,8 @@ graph TD
 
 ```text
 chatbox/
+├── .github/
+│   └── workflows/      # CI verification gate and release pipeline
 ├── backend/            # Rust workspace (API, realtime gateway, workers)
 │   ├── crates/
 │   │   ├── api/        # HTTP/REST handlers
@@ -243,6 +245,12 @@ chatbox/
 ├── scripts/            # Developer and smoke-test scripts
 └── README.md
 ```
+
+CI runs from `.github/workflows/`. `verify.yml` verifies every pushed branch and
+release tag, and can also be started manually or called by another workflow;
+`release.yml` builds, signs, and publishes the artifacts for a signed `v*` tag
+after running those same checks. See [`docs/test.md`](docs/test.md) for the gate
+and [`docs/release.md`](docs/release.md) for the release pipeline.
 
 ---
 
@@ -416,7 +424,20 @@ Contributions are welcome once the initial scaffolding lands.
 2. Follow the **English-first** convention for code, comments, and docs.
 3. Keep commits small and use clear, conventional messages.
 4. Add tests where practical.
-5. Open a pull request describing the change and its motivation.
+5. Pin every GitHub Actions dependency in `.github/workflows/` to a full commit
+   SHA (see below).
+6. Open a pull request describing the change and its motivation.
+
+> **CI supply chain.** Every external `uses:` in `.github/workflows/` must
+> reference a full 40-character commit SHA — never a mutable ref such as `@v4`,
+> `@main`, or `@stable`, because a moved tag silently changes what CI runs.
+> Local reusable workflows referenced by path (`./.github/workflows/...`) are
+> versioned with this repository and need no SHA. Keep the human-readable
+> version in a trailing comment:
+>
+> ```yaml
+> - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+> ```
 
 ---
 

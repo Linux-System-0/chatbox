@@ -186,6 +186,8 @@ graph TD
 
 ```text
 chatbox/
+├── .github/
+│   └── workflows/      # CI 校验门禁与发布流水线
 ├── backend/            # Rust workspace（API、实时网关、后台任务）
 │   ├── crates/
 │   │   ├── api/        # HTTP/REST 处理器
@@ -205,6 +207,11 @@ chatbox/
 ├── scripts/            # 开发与冒烟测试脚本
 └── README.md
 ```
+
+CI 由 `.github/workflows/` 驱动：`verify.yml` 校验每次推送的分支与发布标签，
+也支持在 Actions 页面手动触发或被其他 workflow 调用；`release.yml` 在跑完同一套
+校验后，为已签名的 `v*` 标签构建、签名并发布产物。门禁说明见
+[`docs/test.md`](docs/test.md)，发布流水线见 [`docs/release.md`](docs/release.md)。
 
 ---
 
@@ -371,7 +378,19 @@ sequenceDiagram
 2. 遵循**英文优先**约定：代码、注释与文档均使用英文。
 3. 保持提交粒度小，并使用清晰的规范化提交信息。
 4. 在可行的情况下补充测试。
-5. 提交 Pull Request，说明变更内容与动机。
+5. `.github/workflows/` 中引用的每个 GitHub Actions 必须锁定到完整的提交 SHA
+   （见下文）。
+6. 提交 Pull Request，说明变更内容与动机。
+
+> **CI 供应链安全。** `.github/workflows/` 中的每个外部 `uses:` 都必须引用完整
+> 的 40 位提交 SHA，绝不使用 `@v4`、`@main`、`@stable` 这类可变引用——被打标签
+> 重新指向后，CI 实际执行的内容会在本仓库毫无改动的情况下悄然变化。通过路径
+> 引用的本地可复用 workflow（`./.github/workflows/...`）随本仓库一起版本化，
+> 无需 SHA。请在行尾注释中保留可读的版本号：
+>
+> ```yaml
+> - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+> ```
 
 ---
 

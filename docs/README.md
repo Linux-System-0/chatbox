@@ -16,6 +16,7 @@ behavior it describes and kept in sync with the code.
 | [`web-client.md`](web-client.md) | Web UI structure, design tokens, themes, and accessibility |
 | [`android-network-security.md`](android-network-security.md) | Android server setup, host matching, and runtime TLS trust |
 | [`operations.md`](operations.md) | Configuration, deployment, migrations, and health |
+| [`test.md`](test.md) | CI gate: push triggers, reusable verify workflow, and required branch protection |
 | [`release.md`](release.md) | Release pipeline, gates, secrets, and artifacts |
 
 ## Architecture Decision Records

@@ -234,6 +234,8 @@ review, and only when the branch is green.
 - [ ] Documentation and the roadmap are updated (see §6).
 - [ ] At least one maintainer has reviewed and approved the change.
 - [ ] The changelog/release notes are updated for user-visible changes.
+- [ ] Every external `uses:` in `.github/workflows/` is pinned to a full
+      commit SHA (see §8 — GitHub Actions pinning).
 
 ### Merge procedure
 
@@ -366,7 +368,47 @@ Rules:
 - Keep all `await`s/timeouts bounded, avoid blocking the async runtime, and
   respect the engineering constraints documented in `README.md`.
 - Add tests for new behavior and bug fixes where practical.
+- Keep each workflow and its documentation in sync:
+  `.github/workflows/verify.yml` and `.github/workflows/release.yml` with
+  `docs/test.md` and `docs/release.md`. The verification workflow is both the
+  push gate and the reusable gate `release.yml` calls; update the workflow and
+  its documentation in the same change.
 - Never commit secrets, credentials, or local `.env` files (see `.gitignore`).
+
+### GitHub Actions pinning
+
+**Every external action referenced from `.github/workflows/` MUST be pinned to
+a full 40-character commit SHA.** Mutable
+refs (`@v4`, `@main`, `@stable`, `@latest`) are rejected in review: tags and
+branches can be re-pointed, so a pinned tag is not a lock — whoever controls the
+action could change what CI runs on our runners without any change in this
+repository.
+
+```yaml
+# Correct — immutable commit, human-readable version in a comment.
+- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+# Rejected — mutable ref.
+- uses: actions/checkout@v4
+```
+
+Rules:
+
+- Pin to the commit the intended release tag points at, and keep the version in
+  a trailing comment so reviewers can see what was pinned.
+- Update pins deliberately: change the SHA **and** the comment in the same
+  commit. Never edit the comment without changing the SHA.
+- Local actions and reusable workflows referenced by path
+  (`./.github/actions/...`, `./.github/workflows/...`) are part of this
+  repository and are not pinned; every external action they call still needs a
+  full SHA.
+- The rule covers the whole `uses:` surface, including reusable workflows
+  (`owner/repo/.github/workflows/x.yml@<sha>`) and container images
+  (`image: repo/name@sha256:...`).
+- Fix unpinned refs in the workflows and actions you touch in the same pull
+  request; do not add new unpinned actions while a cleanup is pending.
+- If a tool cannot be pinned (e.g. it resolves its version at runtime), document
+  why in the workflow or action and prefer a pinning-capable replacement.
 
 ---
 
