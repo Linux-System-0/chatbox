@@ -56,6 +56,9 @@ data class ConversationView(
 )
 
 @Serializable
+data class ConversationRef(val id: Long, val kind: String)
+
+@Serializable
 data class ContactView(val user: User, val remark: String? = null, @SerialName("created_at") val createdAt: String = "")
 
 @Serializable
@@ -102,7 +105,7 @@ data class MessagesResponse(val messages: List<Message>)
 data class MessageResponse(val message: Message)
 
 @Serializable
-data class DirectResponse(val conversation: ConversationView)
+data class DirectResponse(val conversation: ConversationRef)
 
 @Serializable
 data class ContactsResponse(val contacts: List<ContactView>)
